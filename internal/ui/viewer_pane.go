@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -19,23 +20,50 @@ var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 // drawWriter wraps a tview.TextView as an io.Writer and throttles redraws.
 // At most one QueueUpdateDraw is queued at a time. ScrollToEnd runs safely
 // inside the queued callback on the main goroutine.
+//
+// Incoming bytes are buffered so that only complete lines (terminated by '\n')
+// are colorized and forwarded to the text view. Any trailing partial line is
+// kept in lineBuf until more data arrives.
 type drawWriter struct {
 	tv      *tview.TextView
 	app     *tview.Application
 	vp      *ViewerPane
 	mu      sync.Mutex
 	pending bool
+	lineBuf bytes.Buffer
 }
 
 func (dw *drawWriter) Write(p []byte) (int, error) {
-	n, err := dw.tv.Write(p)
+	origLen := len(p)
+
+	dw.mu.Lock()
+	dw.lineBuf.Write(p)
+	data := dw.lineBuf.String()
+
+	// Find last newline — everything up to it can be colorized.
+	lastNL := strings.LastIndex(data, "\n")
+	if lastNL == -1 {
+		// No complete line yet; keep buffering.
+		dw.mu.Unlock()
+		return origLen, nil
+	}
+
+	complete := data[:lastNL+1] // includes the trailing '\n'
+	remainder := data[lastNL+1:]
+
+	dw.lineBuf.Reset()
+	dw.lineBuf.WriteString(remainder)
+	dw.mu.Unlock()
+
+	// Colorize complete lines and write to the text view.
+	colorized := colorizeBlock(strings.TrimSuffix(complete, "\n"))
+	colorized += "\n"
+	_, err := io.WriteString(dw.tv, colorized)
+
 	dw.mu.Lock()
 	if !dw.pending {
 		dw.pending = true
 		dw.mu.Unlock()
-		// Use a goroutine so we never block the io.Copy caller on QueueUpdateDraw.
-		// This prevents a deadlock when the main goroutine is waiting for the
-		// tailer to finish (e.g. during stopTailLocked).
 		go dw.app.QueueUpdateDraw(func() {
 			dw.tv.ScrollToEnd()
 			dw.mu.Lock()
@@ -46,7 +74,8 @@ func (dw *drawWriter) Write(p []byte) (int, error) {
 	} else {
 		dw.mu.Unlock()
 	}
-	return n, err
+
+	return origLen, err
 }
 
 // ViewerPane displays log file content with live tailing support.
@@ -290,11 +319,11 @@ func (vp *ViewerPane) StopSpinner() {
 	}
 }
 
-// SetText replaces the current content.
+// SetText replaces the current content, applying log colorization.
 func (vp *ViewerPane) SetText(text string) {
 	vp.textView.SetTextAlign(tview.AlignLeft)
 	vp.textView.Clear()
-	vp.textView.SetText(text)
+	vp.textView.SetText(colorizeBlock(text))
 	vp.textView.ScrollToEnd()
 	vp.updateLineCount()
 }
