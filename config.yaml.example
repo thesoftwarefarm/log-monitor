@@ -1,0 +1,30 @@
+# Log Monitor Configuration
+#
+# defaults: applied to all servers unless overridden
+# servers:  list of remote servers to monitor
+
+defaults:
+  ssh_key: "~/.ssh/id_rsa"       # default SSH private key path
+  ssh_port: 22                    # default SSH port
+  tail_lines: 100                 # number of lines to show initially
+  poll_interval: 5s               # how often to refresh file metadata
+
+servers:
+  - name: "Production Web 1"
+    host: "192.168.1.10"
+    port: 22
+    user: "deploy"
+    auth:
+      method: "key"               # "key", "password", or "agent"
+      key_path: "~/.ssh/prod_key"
+    log_path: "/var/log/myapp"
+    file_patterns:                # optional glob filters
+      - "*.log"
+      - "*.log.*"
+
+  - name: "Staging DB"
+    host: "10.0.0.50"
+    user: "admin"
+    auth:
+      method: "agent"             # use SSH agent for authentication
+    log_path: "/var/log/postgresql"
