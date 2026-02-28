@@ -29,7 +29,7 @@ func (t *Tailer) SetErrCallback(fn func(error)) {
 
 // StartTail begins tailing a remote file, writing output to w.
 // The returned Tailer can be stopped via Stop().
-func StartTail(ctx context.Context, client *gossh.Client, path string, lines int, w io.Writer) (*Tailer, error) {
+func StartTail(ctx context.Context, client *gossh.Client, path string, lines int, w io.Writer, opts CommandOpts) (*Tailer, error) {
 	sess, err := client.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)
@@ -42,9 +42,24 @@ func StartTail(ctx context.Context, client *gossh.Client, path string, lines int
 	}
 
 	cmd := fmt.Sprintf("tail -n %d -f %s", lines, shellescape.Quote(path))
-	if err := sess.Start(cmd); err != nil {
-		sess.Close()
-		return nil, fmt.Errorf("starting tail: %w", err)
+	if opts.SudoPassword != "" {
+		cmd = fmt.Sprintf("sudo -S %s", cmd)
+		stdin, err := sess.StdinPipe()
+		if err != nil {
+			sess.Close()
+			return nil, fmt.Errorf("stdin pipe: %w", err)
+		}
+		if err := sess.Start(cmd); err != nil {
+			sess.Close()
+			return nil, fmt.Errorf("starting tail: %w", err)
+		}
+		fmt.Fprintf(stdin, "%s\n", opts.SudoPassword)
+		stdin.Close()
+	} else {
+		if err := sess.Start(cmd); err != nil {
+			sess.Close()
+			return nil, fmt.Errorf("starting tail: %w", err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

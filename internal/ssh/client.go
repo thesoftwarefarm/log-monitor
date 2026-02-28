@@ -17,14 +17,45 @@ import (
 
 // Pool manages SSH connections to multiple servers, reusing existing connections.
 type Pool struct {
-	mu      sync.Mutex
-	clients map[string]*ssh.Client
+	mu         sync.Mutex
+	clients    map[string]*ssh.Client
+	sudoPasswd map[string]string
 }
 
 func NewPool() *Pool {
 	return &Pool{
-		clients: make(map[string]*ssh.Client),
+		clients:    make(map[string]*ssh.Client),
+		sudoPasswd: make(map[string]string),
 	}
+}
+
+// ServerKey returns the pool key for the given server config.
+func ServerKey(srv config.ServerConfig) string {
+	return fmt.Sprintf("%s@%s:%d", srv.User, srv.Host, srv.Port)
+}
+
+// SetSudoPassword stores a sudo password for a server.
+func (p *Pool) SetSudoPassword(srv config.ServerConfig, password string) {
+	key := ServerKey(srv)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sudoPasswd[key] = password
+}
+
+// GetSudoPassword returns the stored sudo password for a server.
+func (p *Pool) GetSudoPassword(srv config.ServerConfig) string {
+	key := ServerKey(srv)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sudoPasswd[key]
+}
+
+// ClearSudoPassword removes the stored sudo password for a server.
+func (p *Pool) ClearSudoPassword(srv config.ServerConfig) {
+	key := ServerKey(srv)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.sudoPasswd, key)
 }
 
 // GetClient returns a cached or new SSH connection for the given server config.
@@ -190,7 +221,7 @@ func buildAuth(auth config.AuthConfig) ([]ssh.AuthMethod, net.Conn, error) {
 	}
 }
 
-// CloseAll closes all cached SSH connections.
+// CloseAll closes all cached SSH connections and clears stored sudo passwords.
 func (p *Pool) CloseAll() {
 	logger.Log("ssh", "CloseAll start")
 	p.mu.Lock()
@@ -198,6 +229,9 @@ func (p *Pool) CloseAll() {
 	for key, c := range p.clients {
 		c.Close()
 		delete(p.clients, key)
+	}
+	for key := range p.sudoPasswd {
+		delete(p.sudoPasswd, key)
 	}
 	logger.Log("ssh", "CloseAll done")
 }

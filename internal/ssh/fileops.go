@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -8,9 +9,16 @@ import (
 	"strings"
 	"time"
 
+	"log-monitor/internal/logger"
+
 	"al.essio.dev/pkg/shellescape"
 	gossh "golang.org/x/crypto/ssh"
 )
+
+// CommandOpts holds optional parameters for remote command execution.
+type CommandOpts struct {
+	SudoPassword string
+}
 
 // FileInfo holds metadata about a remote file.
 type FileInfo struct {
@@ -21,9 +29,9 @@ type FileInfo struct {
 }
 
 // ListFiles returns files in the given directory, optionally filtered by glob patterns.
-func ListFiles(client *gossh.Client, dir string, patterns []string) ([]FileInfo, error) {
+func ListFiles(client *gossh.Client, dir string, patterns []string, opts CommandOpts) ([]FileInfo, error) {
 	cmd := fmt.Sprintf("ls -la --time-style=full-iso %s", shellescape.Quote(dir))
-	output, err := runCommand(client, cmd)
+	output, err := runCommand(client, cmd, opts)
 	if err != nil {
 		return nil, fmt.Errorf("listing %s: %w", dir, err)
 	}
@@ -43,9 +51,9 @@ func ListFiles(client *gossh.Client, dir string, patterns []string) ([]FileInfo,
 }
 
 // ReadFileContent reads the last N lines of a remote file.
-func ReadFileContent(client *gossh.Client, path string, lines int) (string, error) {
+func ReadFileContent(client *gossh.Client, path string, lines int, opts CommandOpts) (string, error) {
 	cmd := fmt.Sprintf("tail -n %d %s", lines, shellescape.Quote(path))
-	output, err := runCommand(client, cmd)
+	output, err := runCommand(client, cmd, opts)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -53,9 +61,9 @@ func ReadFileContent(client *gossh.Client, path string, lines int) (string, erro
 }
 
 // StatFile returns metadata for a single remote file.
-func StatFile(client *gossh.Client, path string) (*FileInfo, error) {
+func StatFile(client *gossh.Client, path string, opts CommandOpts) (*FileInfo, error) {
 	cmd := fmt.Sprintf("stat --format='%%n %%s %%Y %%F' %s", shellescape.Quote(path))
-	output, err := runCommand(client, cmd)
+	output, err := runCommand(client, cmd, opts)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
@@ -76,12 +84,46 @@ func StatFile(client *gossh.Client, path string) (*FileInfo, error) {
 	}, nil
 }
 
-func runCommand(client *gossh.Client, cmd string) (string, error) {
+func runCommand(client *gossh.Client, cmd string, opts CommandOpts) (string, error) {
 	sess, err := client.NewSession()
 	if err != nil {
 		return "", fmt.Errorf("creating session: %w", err)
 	}
 	defer sess.Close()
+
+	if opts.SudoPassword != "" {
+		sudoCmd := fmt.Sprintf("sudo -S %s", cmd)
+		logger.Log("ssh", "runCommand (sudo): %s", cmd)
+
+		var stdout, stderr bytes.Buffer
+		sess.Stdout = &stdout
+		sess.Stderr = &stderr
+
+		stdin, err := sess.StdinPipe()
+		if err != nil {
+			return "", fmt.Errorf("stdin pipe: %w", err)
+		}
+
+		if err := sess.Start(sudoCmd); err != nil {
+			return "", fmt.Errorf("starting %q: %w", sudoCmd, err)
+		}
+
+		_, err = fmt.Fprintf(stdin, "%s\n", opts.SudoPassword)
+		if err != nil {
+			return "", fmt.Errorf("writing sudo password: %w", err)
+		}
+		stdin.Close()
+
+		err = sess.Wait()
+		stderrStr := stderr.String()
+		if err != nil {
+			if strings.Contains(stderrStr, "Sorry, try again") || strings.Contains(stderrStr, "incorrect password") {
+				return "", fmt.Errorf("sudo authentication failed")
+			}
+			return "", fmt.Errorf("running %q: %w: %s", cmd, err, stderrStr)
+		}
+		return stdout.String(), nil
+	}
 
 	out, err := sess.CombinedOutput(cmd)
 	if err != nil {

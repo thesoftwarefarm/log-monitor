@@ -30,6 +30,7 @@ type ServerConfig struct {
 	Auth         AuthConfig `yaml:"auth"`
 	LogPath      string     `yaml:"log_path"`
 	FilePatterns []string   `yaml:"file_patterns"`
+	Sudo         bool       `yaml:"sudo"`
 }
 
 type AuthConfig struct {

@@ -19,6 +19,18 @@ func SetupKeybindings(app *tview.Application, a *App) {
 			logger.Log("keys", "key=%s focus=%d", fmt.Sprintf("%v", event.Key()), a.focusIndex)
 		}
 
+		// Ctrl-C always quits, even with a modal open.
+		if event.Key() == tcell.KeyCtrlC {
+			logger.Log("keys", "Ctrl-C → app.Stop()")
+			app.Stop()
+			return nil
+		}
+
+		// Let the modal handle its own input when open.
+		if a.HasModalOpen() {
+			return event
+		}
+
 		switch event.Key() {
 		case tcell.KeyTab:
 			a.CycleFocus(1)
@@ -35,10 +47,6 @@ func SetupKeybindings(app *tview.Application, a *App) {
 				return nil
 			}
 			a.StopTail()
-			return nil
-		case tcell.KeyCtrlC:
-			logger.Log("keys", "Ctrl-C → app.Stop()")
-			app.Stop()
 			return nil
 		case tcell.KeyHome:
 			if a.FocusedOnViewer() {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,8 @@ type App struct {
 	tviewApp *tview.Application
 	config   *config.Config
 	pool     *ssh.Pool
+
+	pages *tview.Pages
 
 	serverPane *ServerPane
 	filePane   *FilePane
@@ -87,7 +90,9 @@ func NewApp(cfg *config.Config) *App {
 		AddItem(panes, 0, 1, true).
 		AddItem(a.statusBar.Widget(), 2, 0, false)
 
-	tviewApp.SetRoot(layout, true)
+	a.pages = tview.NewPages()
+	a.pages.AddPage("main", layout, true, true)
+	tviewApp.SetRoot(a.pages, true)
 
 	// Setup keybindings
 	SetupKeybindings(tviewApp, a)
@@ -161,6 +166,50 @@ func (a *App) updateShortcutsForFocus() {
 	}
 }
 
+// HasModalOpen returns true if a modal overlay (e.g. sudo password prompt) is visible.
+func (a *App) HasModalOpen() bool {
+	name, _ := a.pages.GetFrontPage()
+	return name != "main"
+}
+
+// promptSudoPassword shows a modal password prompt. The callback receives the
+// entered password, or "" if the user cancelled.
+func (a *App) promptSudoPassword(serverName string, callback func(string)) {
+	form := tview.NewForm()
+	form.AddPasswordField("Password:", "", 0, '*', nil)
+	form.AddButton("OK", func() {
+		pw := form.GetFormItemByLabel("Password:").(*tview.InputField).GetText()
+		a.pages.RemovePage("sudo-prompt")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		callback(pw)
+	})
+	form.AddButton("Cancel", func() {
+		a.pages.RemovePage("sudo-prompt")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		callback("")
+	})
+	form.SetCancelFunc(func() {
+		a.pages.RemovePage("sudo-prompt")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		callback("")
+	})
+	form.SetBorder(true)
+	form.SetTitle(fmt.Sprintf(" Sudo password for %s ", serverName))
+	form.SetTitleAlign(tview.AlignCenter)
+
+	modal := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexColumn).
+			AddItem(nil, 0, 1, false).
+			AddItem(form, 50, 0, true).
+			AddItem(nil, 0, 1, false),
+			7, 0, true).
+		AddItem(nil, 0, 1, false)
+
+	a.pages.AddPage("sudo-prompt", modal, true, true)
+	a.tviewApp.SetFocus(form)
+}
+
 // FocusedOnViewer returns true if the viewer pane currently has focus.
 func (a *App) FocusedOnViewer() bool {
 	return a.focusIndex == 2
@@ -222,17 +271,38 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 	a.cancelConnectLocked()
 	a.currentServer = &srv
 	a.currentFile = nil
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	a.connectCancel = cancel
 	a.mu.Unlock()
 
 	logger.Log("app", "clearing panes")
 	a.viewerPane.Clear()
 	a.filePane.Clear()
 	a.serverPane.MarkSelected(idx)
+
+	if srv.Sudo && a.pool.GetSudoPassword(srv) == "" {
+		a.promptSudoPassword(srv.Name, func(pw string) {
+			if pw == "" {
+				a.statusBar.SetContext("[yellow]Sudo password cancelled[-]")
+				a.FocusPane(0)
+				return
+			}
+			a.pool.SetSudoPassword(srv, pw)
+			a.startConnection(srv)
+		})
+		return
+	}
+
+	a.startConnection(srv)
+}
+
+func (a *App) startConnection(srv config.ServerConfig) {
+	a.mu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	a.connectCancel = cancel
+	a.mu.Unlock()
+
 	a.FocusPane(1)
 	a.statusBar.SetContext(fmt.Sprintf("[yellow]Connecting to[-] %s...", srv.Name))
-	logger.Log("app", "onServerSelected done, launching loadFiles goroutine")
+	logger.Log("app", "startConnection: launching loadFiles goroutine")
 
 	go a.loadFiles(ctx, srv)
 }
@@ -264,9 +334,30 @@ func (a *App) loadFiles(ctx context.Context, srv config.ServerConfig) {
 	}
 	logger.Log("app", "loadFiles: GetClient succeeded, listing files")
 
-	files, err := ssh.ListFiles(client, srv.LogPath, srv.FilePatterns)
+	opts := ssh.CommandOpts{}
+	if srv.Sudo {
+		opts.SudoPassword = a.pool.GetSudoPassword(srv)
+	}
+
+	files, err := ssh.ListFiles(client, srv.LogPath, srv.FilePatterns, opts)
 	if err != nil {
 		logger.Log("app", "loadFiles: ListFiles failed: %v", err)
+		if strings.Contains(err.Error(), "sudo authentication failed") {
+			a.pool.ClearSudoPassword(srv)
+			a.queueUpdate(func() {
+				a.statusBar.SetError("Sudo authentication failed — try again")
+				a.promptSudoPassword(srv.Name, func(pw string) {
+					if pw == "" {
+						a.statusBar.SetContext("[yellow]Sudo password cancelled[-]")
+						a.FocusPane(0)
+						return
+					}
+					a.pool.SetSudoPassword(srv, pw)
+					a.startConnection(srv)
+				})
+			})
+			return
+		}
 		listErr := fmt.Sprintf("list files: %v", err)
 		a.queueUpdate(func() {
 			a.statusBar.SetError(listErr)
@@ -320,8 +411,13 @@ func (a *App) loadAndTailFile(srv config.ServerConfig, file ssh.FileInfo, fullPa
 		return
 	}
 
+	opts := ssh.CommandOpts{}
+	if srv.Sudo {
+		opts.SudoPassword = a.pool.GetSudoPassword(srv)
+	}
+
 	// Read initial content
-	content, err := ssh.ReadFileContent(client, fullPath, a.config.Defaults.TailLines)
+	content, err := ssh.ReadFileContent(client, fullPath, a.config.Defaults.TailLines, opts)
 	if err != nil {
 		a.queueUpdate(func() {
 			a.statusBar.SetError(fmt.Sprintf("read: %v", err))
@@ -335,7 +431,7 @@ func (a *App) loadAndTailFile(srv config.ServerConfig, file ssh.FileInfo, fullPa
 
 	// Start tailing
 	ctx, cancel := context.WithCancel(context.Background())
-	tailer, err := ssh.StartTail(ctx, client, fullPath, 0, a.viewerPane.Writer())
+	tailer, err := ssh.StartTail(ctx, client, fullPath, 0, a.viewerPane.Writer(), opts)
 	if err != nil {
 		cancel()
 		a.queueUpdate(func() {

@@ -28,3 +28,4 @@ servers:
     auth:
       method: "agent"             # use SSH agent for authentication
     log_path: "/var/log/postgresql"
+    sudo: true                    # use sudo for reading log files (prompts for password)
