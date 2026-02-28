@@ -13,6 +13,9 @@ import (
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to configuration file")
 	debugLog := flag.String("debug", "", "path to debug log file (e.g. debug.log)")
+	autoServer := flag.String("server", "", "auto-select server by name")
+	autoFolder := flag.String("folder", "", "auto-select folder by path (requires -server)")
+	autoFile := flag.String("file", "", "auto-select file by name (requires -server)")
 	flag.Parse()
 
 	if *debugLog != "" {
@@ -31,7 +34,11 @@ func main() {
 
 	logger.Log("main", "config loaded, %d servers", len(cfg.Servers))
 
-	app := ui.NewApp(cfg)
+	app := ui.NewApp(cfg, ui.AutoSelect{
+		Server: *autoServer,
+		Folder: *autoFolder,
+		File:   *autoFile,
+	})
 	if err := app.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

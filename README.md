@@ -112,6 +112,25 @@ servers:
 
 - `-config`: Path to configuration file (default: "config.yaml")
 - `-debug`: Path to debug log file for troubleshooting
+- `-server`: Auto-select a server by name at startup
+- `-folder`: Auto-select a folder by path (use with `-server`)
+- `-file`: Auto-select and tail a file by name (use with `-server`)
+
+All flags are optional and can be combined. Partial usage is supported — you only need to specify the level of auto-navigation you want:
+
+```bash
+# Auto-select a server, then manually pick a folder/file
+./log-monitor -server myhost
+
+# Auto-select server and folder, then manually pick a file
+./log-monitor -server myhost -folder /var/log
+
+# Auto-select server and file (works for single-folder servers)
+./log-monitor -server myhost -file app.log
+
+# Full auto-navigation: jump straight to tailing a file
+./log-monitor -server myhost -folder /var/log -file app.log
+```
 
 ### Interface Navigation
 

@@ -18,6 +18,13 @@ import (
 	"github.com/rivo/tview"
 )
 
+// AutoSelect holds CLI flags for automatic server/folder/file selection at startup.
+type AutoSelect struct {
+	Server string
+	Folder string
+	File   string
+}
+
 // App is the main application struct tying together all UI panes, SSH pool, and config.
 type App struct {
 	tviewApp *tview.Application
@@ -41,6 +48,10 @@ type App struct {
 	tailCancel    context.CancelFunc
 	connectCancel context.CancelFunc // cancels in-progress SSH connection
 
+	// Auto-selection from CLI flags
+	autoSelect   AutoSelect
+	onFilesLoaded func() // one-shot callback fired after loadFilesForFolder populates the file pane
+
 	// Last non-filter context message, restored when filter is cleared
 	lastContext string
 
@@ -54,13 +65,14 @@ type App struct {
 }
 
 // NewApp creates and wires the full TUI application.
-func NewApp(cfg *config.Config) *App {
+func NewApp(cfg *config.Config, autoSelect AutoSelect) *App {
 	tviewApp := tview.NewApplication()
 
 	a := &App{
-		tviewApp: tviewApp,
-		config:   cfg,
-		pool:     ssh.NewPool(),
+		tviewApp:   tviewApp,
+		config:     cfg,
+		pool:       ssh.NewPool(),
+		autoSelect: autoSelect,
 	}
 
 	// Create panes
@@ -170,7 +182,92 @@ func setTerminalTitle(title string) {
 func (a *App) Run() error {
 	setTerminalTitle("Log Monitor")
 	defer a.shutdown()
+
+	if a.autoSelect.Server != "" {
+		logger.Log("app", "Run: scheduling autoStart via QueueUpdateDraw")
+		go func() {
+			a.tviewApp.QueueUpdateDraw(func() {
+				logger.Log("app", "QueueUpdateDraw: calling autoStart")
+				a.autoStart()
+				logger.Log("app", "QueueUpdateDraw: autoStart returned")
+			})
+		}()
+	}
+
 	return a.tviewApp.Run()
+}
+
+// autoStart performs automatic server/folder/file selection based on CLI flags.
+// Called once on the first draw via SetBeforeDrawFunc.
+func (a *App) autoStart() {
+	logger.Log("app", "autoStart: server=%q folder=%q file=%q", a.autoSelect.Server, a.autoSelect.Folder, a.autoSelect.File)
+
+	// Find server by name (case-insensitive)
+	serverIdx := -1
+	var srv config.ServerConfig
+	for i, s := range a.config.Servers {
+		if strings.EqualFold(s.Name, a.autoSelect.Server) {
+			serverIdx = i
+			srv = s
+			break
+		}
+	}
+	if serverIdx < 0 {
+		logger.Log("app", "autoStart: server %q not found in %d servers", a.autoSelect.Server, len(a.config.Servers))
+		a.statusBar.SetError(fmt.Sprintf("Server %q not found", a.autoSelect.Server))
+		return
+	}
+	logger.Log("app", "autoStart: found server %q at idx=%d", srv.Name, serverIdx)
+
+	// If --file is set, install a one-shot callback to auto-select the file after files load
+	if a.autoSelect.File != "" {
+		logger.Log("app", "autoStart: installing onFilesLoaded callback for file=%q", a.autoSelect.File)
+		a.onFilesLoaded = func() {
+			logger.Log("app", "onFilesLoaded: looking for file=%q", a.autoSelect.File)
+			files := a.filePane.GetFiles()
+			logger.Log("app", "onFilesLoaded: filePane has %d files", len(files))
+			for i, f := range files {
+				if strings.EqualFold(f.Name, a.autoSelect.File) {
+					logger.Log("app", "onFilesLoaded: found file %q at idx=%d, calling onFileSelected", f.Name, i)
+					a.onFileSelected(i, f)
+					return
+				}
+			}
+			logger.Log("app", "onFilesLoaded: file %q not found", a.autoSelect.File)
+			a.statusBar.SetError(fmt.Sprintf("File %q not found", a.autoSelect.File))
+		}
+	}
+
+	folders := srv.EffectiveFolders()
+	logger.Log("app", "autoStart: server has %d folders", len(folders))
+
+	if len(folders) > 1 && a.autoSelect.Folder != "" {
+		// Multi-folder server with --folder: select server then find and select folder
+		logger.Log("app", "autoStart: multi-folder + --folder=%q, calling onServerSelected", a.autoSelect.Folder)
+		a.onServerSelected(serverIdx, srv)
+
+		folderIdx := -1
+		var folder config.LogFolder
+		for i, f := range folders {
+			if f.Path == a.autoSelect.Folder {
+				folderIdx = i
+				folder = f
+				break
+			}
+		}
+		if folderIdx < 0 {
+			logger.Log("app", "autoStart: folder %q not found", a.autoSelect.Folder)
+			a.statusBar.SetError(fmt.Sprintf("Folder %q not found on %s", a.autoSelect.Folder, srv.Name))
+			return
+		}
+		logger.Log("app", "autoStart: found folder %q at idx=%d, calling onFolderSelected", folder.Path, folderIdx)
+		a.onFolderSelected(folderIdx, folder)
+	} else {
+		// Single folder, or multi-folder without --folder: just select server
+		logger.Log("app", "autoStart: calling onServerSelected (single folder or no --folder)")
+		a.onServerSelected(serverIdx, srv)
+		logger.Log("app", "autoStart: onServerSelected returned")
+	}
 }
 
 // CycleFocus moves focus to the next or previous pane.
@@ -410,22 +507,32 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 	a.mu.Unlock()
 
 	logger.Log("app", "clearing panes")
+	logger.Log("app", "onServerSelected: viewerPane.Clear()")
 	a.viewerPane.Clear()
+	logger.Log("app", "onServerSelected: filePane.Clear()")
 	a.filePane.Clear()
+	logger.Log("app", "onServerSelected: serverPane.MarkSelected(%d)", idx)
 	a.serverPane.MarkSelected(idx)
+	logger.Log("app", "onServerSelected: setTerminalTitle")
 	setTerminalTitle(fmt.Sprintf("Log Monitor — %s", srv.Name))
 
 	folders := srv.EffectiveFolders()
+	logger.Log("app", "onServerSelected: %d folders", len(folders))
 
 	if len(folders) > 1 {
 		// Multi-folder server: show folder list
+		logger.Log("app", "onServerSelected: multi-folder, calling SetFolders")
 		a.filePane.SetFolders(folders)
+		logger.Log("app", "onServerSelected: SetFolders done, calling FocusPane(1)")
 		a.FocusPane(1)
+		logger.Log("app", "onServerSelected: FocusPane done, calling setContext")
 		a.setContext(fmt.Sprintf("[green]%s[-] — select a folder", srv.Name))
+		logger.Log("app", "onServerSelected: multi-folder done, returning")
 		return
 	}
 
 	// Single folder: auto-select and connect (backward-compatible)
+	logger.Log("app", "onServerSelected: single folder=%s", folders[0].Path)
 	folder := folders[0]
 	a.mu.Lock()
 	a.currentFolder = &folder
@@ -584,6 +691,13 @@ func (a *App) loadFilesForFolder(ctx context.Context, srv config.ServerConfig, f
 	a.queueUpdate(func() {
 		a.filePane.SetFiles(folder.Path, files, showUpDir)
 		a.setContext(fmt.Sprintf("[green]%s[-] — Select a file", srv.Name))
+		if a.onFilesLoaded != nil {
+			logger.Log("app", "loadFilesForFolder: firing onFilesLoaded callback")
+			cb := a.onFilesLoaded
+			a.onFilesLoaded = nil
+			cb()
+			logger.Log("app", "loadFilesForFolder: onFilesLoaded callback returned")
+		}
 	})
 }
 
