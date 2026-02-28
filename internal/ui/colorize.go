@@ -3,6 +3,8 @@ package ui
 import (
 	"regexp"
 	"strings"
+
+	"github.com/rivo/tview"
 )
 
 // colorRule pairs a compiled regex with a tview color-tag replacement string.
@@ -87,12 +89,11 @@ func init() {
 }
 
 // ColorizeLine applies color-tag rules to a single line of log output.
-// Literal brackets are escaped first so tview doesn't misinterpret them.
+// Literal style tags are escaped first so tview doesn't misinterpret them.
 func ColorizeLine(line string) string {
-	// Escape literal "[" so tview treats them as text, not color tags.
-	// Use a placeholder to avoid double-escaping our own injected tags.
-	line = strings.ReplaceAll(line, "[", "\x00LBRACK\x00")
-	line = strings.ReplaceAll(line, "\x00LBRACK\x00", "[[]")
+	// Escape any text that looks like a tview style tag (e.g. "[ERROR]")
+	// so it's displayed literally. Our rules then inject real color tags.
+	line = tview.Escape(line)
 
 	for _, r := range rules {
 		line = r.pattern.ReplaceAllString(line, r.replace)

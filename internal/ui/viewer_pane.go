@@ -55,8 +55,8 @@ func (dw *drawWriter) Write(p []byte) (int, error) {
 	dw.lineBuf.WriteString(remainder)
 	dw.mu.Unlock()
 
-	// Escape brackets so tview doesn't misparse them as color tags.
-	escaped := escapeBrackets(complete)
+	// Escape style tags so tview doesn't misparse them as color tags.
+	escaped := tview.Escape(complete)
 	_, err := io.WriteString(dw.tv, escaped)
 
 	dw.mu.Lock()
@@ -322,14 +322,9 @@ func (vp *ViewerPane) StopSpinner() {
 func (vp *ViewerPane) SetText(text string) {
 	vp.textView.SetTextAlign(tview.AlignLeft)
 	vp.textView.Clear()
-	vp.textView.SetText(escapeBrackets(text))
+	vp.textView.SetText(tview.Escape(text))
 	vp.textView.ScrollToEnd()
 	vp.updateLineCount()
-}
-
-// escapeBrackets escapes literal `[` so tview doesn't misparse them as color tags.
-func escapeBrackets(s string) string {
-	return strings.ReplaceAll(s, "[", "[[]")
 }
 
 // SetMessage displays a centered message in the viewer (e.g. error state).
