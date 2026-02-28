@@ -8,13 +8,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 go build -o log-monitor .        # build binary
 ./log-monitor                     # run with default config.yaml
 ./log-monitor -config path.yaml   # run with custom config
+./log-monitor -debug debug.log    # run with debug logging to file
 ```
 
-There are no tests yet. No linter is configured.
+There are no tests yet. No linter is configured. Releases are handled via GoReleaser (`.goreleaser.yaml`).
 
 ## Architecture
 
-Go TUI application that monitors log files on remote servers via SSH. Uses `tview` for the terminal UI and `golang.org/x/crypto/ssh` for connections.
+Go TUI application (Go 1.25+) that monitors log files on remote servers via SSH. Uses `tview` for the terminal UI and `golang.org/x/crypto/ssh` for connections.
 
 ### Layout
 
@@ -26,7 +27,7 @@ Three-pane layout with a status bar:
 
 - **ServerPane** (`internal/ui/server_pane.go`): `tview.List` of servers from config. Selecting a server triggers SSH connection and file listing.
 - **FilePane** (`internal/ui/file_pane.go`): `tview.Table` showing files (name, size, mod time) in the server's log directory. Selecting a file loads and tails it.
-- **ViewerPane** (`internal/ui/viewer_pane.go`): `tview.TextView` displaying log content. Live-tails via `io.Writer` interface—the SSH tailer writes directly into it.
+- **ViewerPane** (`internal/ui/viewer_pane.go`): `tview.TextView` displaying log content with syntax colorization. Live-tails via `io.Writer` interface—the SSH tailer writes directly into it.
 - **StatusBar** (`internal/ui/status_bar.go`): Shows keybinding hints or transient error messages.
 
 ### Data Flow
@@ -44,12 +45,21 @@ Three-pane layout with a status bar:
 
 ### Concurrency
 
-All SSH operations run in goroutines. UI updates from background goroutines must use `tviewApp.QueueUpdateDraw()`. The `App.mu` mutex protects `currentServer`, `currentFile`, and `tailer` state.
+All SSH operations run in goroutines. UI updates from background goroutines must use `App.queueUpdate()` (wraps `tviewApp.QueueUpdateDraw()` with stop-guard to prevent deadlocks after app exit). The `App.mu` mutex protects `currentServer`, `currentFile`, and `tailer` state. Never call `QueueUpdateDraw` directly from a `SetSelectedFunc` callback—it deadlocks since you're already on the main event loop goroutine.
+
+### Log Colorization (`internal/ui/colorize.go`)
+
+Regex-based syntax highlighting applied per-line to log output. Rules colorize log levels (ERROR=red, WARN=yellow, INFO=green, DEBUG=gray), timestamps, IP addresses, HTTP methods/status codes, quoted strings, and key=value pairs. Literal `[` brackets are escaped to `[[]` so tview doesn't misinterpret them as color tags.
+
+### Other Modules
+
+- **Fuzzy search** (`internal/ui/fuzzy.go`): Case-insensitive subsequence matching for filtering server/file lists. Activated with `/` in the file pane.
+- **Logger** (`internal/logger/logger.go`): Optional debug logger writing to file. Guarded by mutex, safe from any goroutine. Uses elapsed-time format with component tags (e.g. `[ssh]`, `[app]`).
 
 ### Keybindings (`internal/ui/keybindings.go`)
 
-Global: `q`/Ctrl-C quit, Tab/Shift-Tab cycle panes, Esc stops tail. When viewer is focused: `1`/`2`/`3` jump to pane, `r` refreshes file list.
+Global: `q`/Ctrl-C quit, Tab/Shift-Tab cycle panes, `/` fuzzy search, Esc clears filter or stops tail. When viewer is focused: `1`/`2`/`3` jump to pane, `r` refreshes file list.
 
 ## Config
 
-YAML config in `config.yaml` (see `config.yaml.example`). Defines `defaults` (ssh_key, ssh_port, tail_lines, poll_interval) and a `servers` list. Server-level settings override defaults. Auth methods: `key`, `agent`, `password` (password not implemented).
+YAML config in `config.yaml` (see `config.yaml.example`). Defines `defaults` (ssh_key, ssh_port, tail_lines, poll_interval) and a `servers` list. Server-level settings override defaults. Auth methods: `key`, `agent`, `password` (password not implemented). If no auth method is specified, defaults to `key` if ssh_key is set, otherwise `agent`.
