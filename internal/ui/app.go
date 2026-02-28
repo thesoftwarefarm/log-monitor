@@ -81,10 +81,6 @@ func NewApp(cfg *config.Config) *App {
 	a.filePane.SetSelectedFunc(a.onFileSelected)
 	a.filePane.SetFolderSelectedFunc(a.onFolderSelected)
 	a.filePane.SetUpDirFunc(a.onUpDir)
-	a.viewerPane.SetSearchStatusFunc(func(msg string) {
-		a.statusBar.SetContext(" " + msg)
-	})
-
 	// Filter change callbacks — show active filter in status bar
 	filterChanged := func(query string) {
 		if query != "" {
@@ -268,6 +264,82 @@ func (a *App) promptSudoPassword(serverName string, callback func(string)) {
 
 	a.pages.AddPage("sudo-prompt", modal, true, true)
 	a.tviewApp.SetFocus(form)
+}
+
+// promptTailFilter shows a modal with a text input for the tail filter term.
+func (a *App) promptTailFilter(currentQuery string, callback func(string)) {
+	form := tview.NewForm()
+	form.AddInputField("Filter:", currentQuery, 0, nil, nil)
+	form.AddButton("OK", func() {
+		q := form.GetFormItemByLabel("Filter:").(*tview.InputField).GetText()
+		a.pages.RemovePage("filter-prompt")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		callback(q)
+	})
+	form.AddButton("Cancel", func() {
+		a.pages.RemovePage("filter-prompt")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+	})
+	form.SetCancelFunc(func() {
+		a.pages.RemovePage("filter-prompt")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+	})
+	form.SetBorder(true)
+	form.SetTitle(" Tail Filter ")
+	form.SetTitleAlign(tview.AlignCenter)
+
+	modal := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexColumn).
+			AddItem(nil, 0, 1, false).
+			AddItem(form, 50, 0, true).
+			AddItem(nil, 0, 1, false),
+			7, 0, true).
+		AddItem(nil, 0, 1, false)
+
+	a.pages.AddPage("filter-prompt", modal, true, true)
+	a.tviewApp.SetFocus(form)
+}
+
+// ShowFilterPrompt opens the tail filter popup. On OK, sets the filter and
+// re-triggers the file load+tail so both initial content and new lines are filtered.
+func (a *App) ShowFilterPrompt() {
+	a.mu.Lock()
+	srv := a.currentServer
+	folder := a.currentFolder
+	file := a.currentFile
+	a.mu.Unlock()
+
+	if srv == nil || folder == nil || file == nil {
+		return
+	}
+
+	currentFilter := a.viewerPane.GetTailFilter()
+	a.promptTailFilter(currentFilter, func(newFilter string) {
+		a.mu.Lock()
+		// Re-check state — user may have switched files while prompt was open.
+		srv := a.currentServer
+		folder := a.currentFolder
+		file := a.currentFile
+		if srv == nil || folder == nil || file == nil {
+			a.mu.Unlock()
+			return
+		}
+		a.stopTailLocked()
+		srvCopy := *srv
+		fileCopy := *file
+		folderPath := folder.Path
+		a.mu.Unlock()
+
+		a.viewerPane.SetTailFilter(newFilter)
+		a.viewerPane.Clear()
+		// Restore the filter we just set (Clear resets it).
+		a.viewerPane.SetTailFilter(newFilter)
+
+		fullPath := filepath.Join(folderPath, fileCopy.Name)
+		a.setContext(fmt.Sprintf("[green]%s[-] %s", srvCopy.Name, fullPath))
+		go a.loadAndTailFile(srvCopy, fileCopy, fullPath)
+	})
 }
 
 // FocusedOnViewer returns true if the viewer pane currently has focus.

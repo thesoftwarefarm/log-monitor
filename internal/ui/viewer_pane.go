@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
@@ -55,6 +54,15 @@ func (dw *drawWriter) Write(p []byte) (int, error) {
 	dw.lineBuf.WriteString(remainder)
 	dw.mu.Unlock()
 
+	// Apply tail filter if active.
+	filter := dw.vp.GetTailFilter()
+	if filter != "" {
+		complete = filterLines(complete, filter)
+		if complete == "" {
+			return origLen, nil
+		}
+	}
+
 	// Escape style tags so tview doesn't misparse them as color tags.
 	escaped := tview.Escape(complete)
 	_, err := io.WriteString(dw.tv, escaped)
@@ -89,18 +97,12 @@ type ViewerPane struct {
 	spinCancel context.CancelFunc
 	spinBase   string
 
-	// Search state
-	searchInput   *tview.InputField
-	searchVisible bool
-	searchQuery   string
-	matchLines    []int
-	matchIdx      int
+	// Tail filter state
+	tailFilterMu sync.Mutex
+	tailFilter   string
 
 	// Line count
 	lineCount int
-
-	// Callback for search status updates (e.g. "Match 3/17")
-	onSearchStatus func(string)
 }
 
 func NewViewerPane(app *tview.Application) *ViewerPane {
@@ -117,112 +119,63 @@ func NewViewerPane(app *tview.Application) *ViewerPane {
 
 	vp.writer = &drawWriter{tv: vp.textView, app: app, vp: vp}
 
-	// Build the search input field
-	vp.searchInput = tview.NewInputField()
-	vp.searchInput.SetLabel(" /")
-	vp.searchInput.SetFieldBackgroundColor(tcell.ColorDarkSlateGray)
-	vp.searchInput.SetLabelColor(tcell.ColorYellow)
-
-	vp.searchInput.SetDoneFunc(func(key tcell.Key) {
-		switch key {
-		case tcell.KeyEnter:
-			query := vp.searchInput.GetText()
-			vp.executeSearch(query)
-			vp.HideSearch()
-		case tcell.KeyEscape:
-			vp.HideSearch()
-		}
-	})
-
-	// Build the flex container — starts with just the textView
+	// Build the flex container — just the textView
 	vp.flex = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(vp.textView, 0, 1, true)
 
 	return vp
 }
 
-// SetSearchStatusFunc sets a callback for search status messages (e.g. "Match 3/17").
-func (vp *ViewerPane) SetSearchStatusFunc(fn func(string)) {
-	vp.onSearchStatus = fn
+// SetTailFilter sets the active tail filter term. Thread-safe.
+func (vp *ViewerPane) SetTailFilter(query string) {
+	vp.tailFilterMu.Lock()
+	vp.tailFilter = query
+	vp.tailFilterMu.Unlock()
 }
 
-// ShowSearch shows the search input bar and focuses it.
-func (vp *ViewerPane) ShowSearch() {
-	if vp.searchVisible {
-		vp.app.SetFocus(vp.searchInput)
-		return
-	}
-	vp.searchVisible = true
-	vp.searchInput.SetText("")
-	vp.flex.AddItem(vp.searchInput, 1, 0, false)
-	vp.app.SetFocus(vp.searchInput)
+// GetTailFilter returns the current tail filter term. Thread-safe.
+func (vp *ViewerPane) GetTailFilter() string {
+	vp.tailFilterMu.Lock()
+	defer vp.tailFilterMu.Unlock()
+	return vp.tailFilter
 }
 
-// HideSearch hides the search input bar and returns focus to the text view.
-func (vp *ViewerPane) HideSearch() {
-	if !vp.searchVisible {
-		return
-	}
-	vp.searchVisible = false
-	vp.flex.RemoveItem(vp.searchInput)
-	vp.app.SetFocus(vp.textView)
-}
-
-// executeSearch finds all lines containing the query (case-insensitive) and jumps to the first match.
-func (vp *ViewerPane) executeSearch(query string) {
-	vp.searchQuery = query
-	vp.matchLines = nil
-	vp.matchIdx = 0
-
-	if query == "" {
-		return
-	}
-
-	text := vp.textView.GetText(true)
+// filterLines filters complete text (with trailing newlines) keeping only lines
+// that contain query (case-insensitive). Returns filtered text with trailing newline,
+// or empty string if no lines match.
+func filterLines(text, query string) string {
 	lines := strings.Split(text, "\n")
 	lowerQuery := strings.ToLower(query)
-
-	for i, line := range lines {
+	var kept []string
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
 		if strings.Contains(strings.ToLower(line), lowerQuery) {
-			vp.matchLines = append(vp.matchLines, i)
+			kept = append(kept, line)
 		}
 	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return strings.Join(kept, "\n") + "\n"
+}
 
-	if len(vp.matchLines) > 0 {
-		vp.matchIdx = 0
-		vp.textView.ScrollTo(vp.matchLines[0], 0)
-		vp.reportSearchStatus()
-	} else {
-		if vp.onSearchStatus != nil {
-			vp.onSearchStatus("No matches")
+// filterText filters multi-line text keeping only lines containing query (case-insensitive).
+func (vp *ViewerPane) filterText(text string) string {
+	filter := vp.GetTailFilter()
+	if filter == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	lowerQuery := strings.ToLower(filter)
+	var kept []string
+	for _, line := range lines {
+		if strings.Contains(strings.ToLower(line), lowerQuery) {
+			kept = append(kept, line)
 		}
 	}
-}
-
-// NextMatch jumps to the next search match.
-func (vp *ViewerPane) NextMatch() {
-	if len(vp.matchLines) == 0 {
-		return
-	}
-	vp.matchIdx = (vp.matchIdx + 1) % len(vp.matchLines)
-	vp.textView.ScrollTo(vp.matchLines[vp.matchIdx], 0)
-	vp.reportSearchStatus()
-}
-
-// PrevMatch jumps to the previous search match.
-func (vp *ViewerPane) PrevMatch() {
-	if len(vp.matchLines) == 0 {
-		return
-	}
-	vp.matchIdx = (vp.matchIdx - 1 + len(vp.matchLines)) % len(vp.matchLines)
-	vp.textView.ScrollTo(vp.matchLines[vp.matchIdx], 0)
-	vp.reportSearchStatus()
-}
-
-func (vp *ViewerPane) reportSearchStatus() {
-	if vp.onSearchStatus != nil {
-		vp.onSearchStatus(fmt.Sprintf("Match %d/%d", vp.matchIdx+1, len(vp.matchLines)))
-	}
+	return strings.Join(kept, "\n")
 }
 
 // SetTitle sets a custom title on the viewer pane.
@@ -297,8 +250,12 @@ func (vp *ViewerPane) StartSpinner(baseTitle string) {
 					}
 					vp.spinMu.Unlock()
 					title := baseTitle
+					filter := vp.GetTailFilter()
+					if filter != "" {
+						title = fmt.Sprintf("%s [filter: %s]", baseTitle, filter)
+					}
 					if vp.lineCount > 0 {
-						title = fmt.Sprintf("%s (%s lines)", baseTitle, formatLineCount(vp.lineCount))
+						title = fmt.Sprintf("%s (%s lines)", title, formatLineCount(vp.lineCount))
 					}
 					vp.textView.SetTitle(fmt.Sprintf(" %c %s ", spinnerFrames[f%len(spinnerFrames)], title))
 				})
@@ -319,10 +276,12 @@ func (vp *ViewerPane) StopSpinner() {
 }
 
 // SetText replaces the current content, escaping brackets for tview safety.
+// Applies the active tail filter before display.
 func (vp *ViewerPane) SetText(text string) {
 	vp.textView.SetTextAlign(tview.AlignLeft)
 	vp.textView.Clear()
-	vp.textView.SetText(tview.Escape(text))
+	filtered := vp.filterText(text)
+	vp.textView.SetText(tview.Escape(filtered))
 	vp.textView.ScrollToEnd()
 	vp.updateLineCount()
 }
@@ -332,25 +291,19 @@ func (vp *ViewerPane) SetMessage(msg string) {
 	vp.StopSpinner()
 	vp.ResetTitle()
 	vp.textView.Clear()
-	vp.searchQuery = ""
-	vp.matchLines = nil
-	vp.matchIdx = 0
+	vp.tailFilter = ""
 	vp.lineCount = 0
-	vp.HideSearch()
 	vp.textView.SetTextAlign(tview.AlignCenter)
 	vp.textView.SetText("\n\n\n" + msg)
 }
 
-// Clear removes all content, stops spinner, and resets the title.
+// Clear removes all content, stops spinner, resets the title, and clears the filter.
 func (vp *ViewerPane) Clear() {
 	vp.StopSpinner()
 	vp.ResetTitle()
 	vp.textView.Clear()
-	vp.searchQuery = ""
-	vp.matchLines = nil
-	vp.matchIdx = 0
+	vp.tailFilter = ""
 	vp.lineCount = 0
-	vp.HideSearch()
 }
 
 // Writer returns an io.Writer that appends to the text view with throttled redraws.
@@ -358,7 +311,7 @@ func (vp *ViewerPane) Writer() io.Writer {
 	return vp.writer
 }
 
-// Widget returns the flex container (textView + optional search bar).
+// Widget returns the flex container.
 func (vp *ViewerPane) Widget() tview.Primitive {
 	return vp.flex
 }
@@ -366,9 +319,4 @@ func (vp *ViewerPane) Widget() tview.Primitive {
 // TextView returns the underlying tview.TextView for focus management.
 func (vp *ViewerPane) TextView() *tview.TextView {
 	return vp.textView
-}
-
-// SearchVisible returns whether the search bar is currently shown.
-func (vp *ViewerPane) SearchVisible() bool {
-	return vp.searchVisible
 }

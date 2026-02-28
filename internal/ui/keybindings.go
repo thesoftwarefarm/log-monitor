@@ -39,14 +39,13 @@ func SetupKeybindings(app *tview.Application, a *App) {
 			a.CycleFocus(-1)
 			return nil
 		case tcell.KeyEscape:
-			if a.viewerPane.SearchVisible() {
-				a.viewerPane.HideSearch()
-				return nil
-			}
 			if a.ClearFocusedFilter() {
 				return nil
 			}
 			a.StopTail()
+			return nil
+		case tcell.KeyF7:
+			a.ShowFilterPrompt()
 			return nil
 		case tcell.KeyHome:
 			if a.FocusedOnViewer() {
@@ -71,15 +70,6 @@ func SetupKeybindings(app *tview.Application, a *App) {
 				switch event.Rune() {
 				case 'r':
 					a.RefreshFiles()
-					return nil
-				case '/':
-					a.viewerPane.ShowSearch()
-					return nil
-				case 'n':
-					a.viewerPane.NextMatch()
-					return nil
-				case 'N':
-					a.viewerPane.PrevMatch()
 					return nil
 				case 'g':
 					a.viewerPane.TextView().ScrollToBeginning()
