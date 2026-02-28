@@ -29,3 +29,19 @@ servers:
       method: "agent"             # use SSH agent for authentication
     log_path: "/var/log/postgresql"
     sudo: true                    # use sudo for reading log files (prompts for password)
+
+  - name: "Web Server"
+    host: "10.0.0.60"
+    user: "deploy"
+    log_folders:                  # multiple log directories (mutually exclusive with log_path)
+      - name: "nginx"
+        path: "/var/log/nginx"
+        file_patterns:
+          - "*.log"
+      - name: "laravel"
+        path: "/var/log/laravel"
+      - name: "mysql"
+        path: "/var/log/mysql"
+        file_patterns:
+          - "*.log"
+          - "*.err"

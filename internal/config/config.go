@@ -22,15 +22,36 @@ type Defaults struct {
 	PollInterval time.Duration `yaml:"poll_interval"`
 }
 
+type LogFolder struct {
+	Name         string   `yaml:"name"`
+	Path         string   `yaml:"path"`
+	FilePatterns []string `yaml:"file_patterns"`
+}
+
 type ServerConfig struct {
-	Name         string     `yaml:"name"`
-	Host         string     `yaml:"host"`
-	Port         int        `yaml:"port"`
-	User         string     `yaml:"user"`
-	Auth         AuthConfig `yaml:"auth"`
-	LogPath      string     `yaml:"log_path"`
-	FilePatterns []string   `yaml:"file_patterns"`
-	Sudo         bool       `yaml:"sudo"`
+	Name         string      `yaml:"name"`
+	Host         string      `yaml:"host"`
+	Port         int         `yaml:"port"`
+	User         string      `yaml:"user"`
+	Auth         AuthConfig  `yaml:"auth"`
+	LogPath      string      `yaml:"log_path"`
+	FilePatterns []string    `yaml:"file_patterns"`
+	LogFolders   []LogFolder `yaml:"log_folders"`
+	Sudo         bool        `yaml:"sudo"`
+}
+
+// EffectiveFolders returns the list of folders to monitor. If LogFolders is
+// set it is returned directly; otherwise a single LogFolder is synthesised
+// from the legacy LogPath/FilePatterns fields.
+func (s *ServerConfig) EffectiveFolders() []LogFolder {
+	if len(s.LogFolders) > 0 {
+		return s.LogFolders
+	}
+	return []LogFolder{{
+		Name:         "",
+		Path:         s.LogPath,
+		FilePatterns: s.FilePatterns,
+	}}
 }
 
 type AuthConfig struct {
@@ -101,8 +122,23 @@ func validate(cfg *Config) error {
 		if s.User == "" {
 			return fmt.Errorf("server %d (%s): user is required", i, s.Host)
 		}
-		if s.LogPath == "" {
-			return fmt.Errorf("server %d (%s): log_path is required", i, s.Host)
+		hasLogPath := s.LogPath != ""
+		hasLogFolders := len(s.LogFolders) > 0
+		if hasLogPath && hasLogFolders {
+			return fmt.Errorf("server %d (%s): cannot set both log_path and log_folders", i, s.Host)
+		}
+		if !hasLogPath && !hasLogFolders {
+			return fmt.Errorf("server %d (%s): log_path or log_folders is required", i, s.Host)
+		}
+		if hasLogFolders {
+			for j, f := range s.LogFolders {
+				if f.Name == "" {
+					return fmt.Errorf("server %d (%s): log_folders[%d]: name is required", i, s.Host, j)
+				}
+				if f.Path == "" {
+					return fmt.Errorf("server %d (%s): log_folders[%d]: path is required", i, s.Host, j)
+				}
+			}
 		}
 		if s.Name == "" {
 			cfg.Servers[i].Name = fmt.Sprintf("%s@%s", s.User, s.Host)

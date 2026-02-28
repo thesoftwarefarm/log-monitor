@@ -11,6 +11,7 @@ const defaultShortcuts = " [yellow]q[white]: Exit | [yellow]↑↓[white]: Navig
 // Pane-specific shortcut hints.
 const (
 	ShortcutsListPane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]q[white]: Exit"
+	ShortcutsFolderPane = " [yellow]Enter[white]: Select folder | [yellow]Tab[white]: Switch pane | [yellow]q[white]: Exit"
 	ShortcutsViewerPane = " [yellow]/[white]: Search | [yellow]n/N[white]: Next/Prev | [yellow]g/G[white]: Top/Bottom | [yellow]r[white]: Refresh | [yellow]Esc[white]: Stop tail | [yellow]q[white]: Exit"
 )
 

@@ -33,6 +33,7 @@ type App struct {
 	// Current state
 	mu            sync.Mutex
 	currentServer *config.ServerConfig
+	currentFolder *config.LogFolder
 	currentFile   *ssh.FileInfo
 	tailer        *ssh.Tailer
 	tailCtx       context.Context
@@ -74,6 +75,8 @@ func NewApp(cfg *config.Config) *App {
 	// Wire callbacks
 	a.serverPane.SetSelectedFunc(a.onServerSelected)
 	a.filePane.SetSelectedFunc(a.onFileSelected)
+	a.filePane.SetFolderSelectedFunc(a.onFolderSelected)
+	a.filePane.SetUpDirFunc(a.onUpDir)
 	a.viewerPane.SetSearchStatusFunc(func(msg string) {
 		a.statusBar.SetContext(" " + msg)
 	})
@@ -159,9 +162,12 @@ func (a *App) FocusPane(idx int) {
 
 // updateShortcutsForFocus updates the status bar shortcuts based on the focused pane.
 func (a *App) updateShortcutsForFocus() {
-	if a.focusIndex == 2 {
+	switch {
+	case a.focusIndex == 2:
 		a.statusBar.SetShortcuts(ShortcutsViewerPane)
-	} else {
+	case a.focusIndex == 1 && a.filePane.IsInFolderMode():
+		a.statusBar.SetShortcuts(ShortcutsFolderPane)
+	default:
 		a.statusBar.SetShortcuts(ShortcutsListPane)
 	}
 }
@@ -248,19 +254,22 @@ func (a *App) StopTail() {
 	}
 }
 
-// RefreshFiles reloads the file list for the current server.
+// RefreshFiles reloads the file list for the current server and folder.
 func (a *App) RefreshFiles() {
 	a.mu.Lock()
 	srv := a.currentServer
+	folder := a.currentFolder
 	a.mu.Unlock()
 
-	if srv == nil {
+	if srv == nil || folder == nil {
 		return
 	}
+	srvCopy := *srv
+	folderCopy := *folder
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	go func() {
 		defer cancel()
-		a.loadFiles(ctx, *srv)
+		a.loadFilesForFolder(ctx, srvCopy, folderCopy)
 	}()
 }
 
@@ -270,6 +279,7 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 	a.stopTailLocked()
 	a.cancelConnectLocked()
 	a.currentServer = &srv
+	a.currentFolder = nil
 	a.currentFile = nil
 	a.mu.Unlock()
 
@@ -277,6 +287,22 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 	a.viewerPane.Clear()
 	a.filePane.Clear()
 	a.serverPane.MarkSelected(idx)
+
+	folders := srv.EffectiveFolders()
+
+	if len(folders) > 1 {
+		// Multi-folder server: show folder list
+		a.filePane.SetFolders(folders)
+		a.FocusPane(1)
+		a.statusBar.SetContext(fmt.Sprintf("[green]%s[-] — select a folder", srv.Name))
+		return
+	}
+
+	// Single folder: auto-select and connect (backward-compatible)
+	folder := folders[0]
+	a.mu.Lock()
+	a.currentFolder = &folder
+	a.mu.Unlock()
 
 	if srv.Sudo && a.pool.GetSudoPassword(srv) == "" {
 		a.promptSudoPassword(srv.Name, func(pw string) {
@@ -294,17 +320,73 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 	a.startConnection(srv)
 }
 
+func (a *App) onFolderSelected(idx int, folder config.LogFolder) {
+	logger.Log("app", "onFolderSelected: %s (idx=%d)", folder.Path, idx)
+	a.mu.Lock()
+	a.stopTailLocked()
+	srv := a.currentServer
+	if srv == nil {
+		a.mu.Unlock()
+		return
+	}
+	a.currentFolder = &folder
+	a.currentFile = nil
+	srvCopy := *srv
+	a.mu.Unlock()
+
+	a.viewerPane.Clear()
+
+	if srvCopy.Sudo && a.pool.GetSudoPassword(srvCopy) == "" {
+		a.promptSudoPassword(srvCopy.Name, func(pw string) {
+			if pw == "" {
+				a.statusBar.SetContext("[yellow]Sudo password cancelled[-]")
+				a.FocusPane(0)
+				return
+			}
+			a.pool.SetSudoPassword(srvCopy, pw)
+			a.startConnection(srvCopy)
+		})
+		return
+	}
+
+	a.startConnection(srvCopy)
+}
+
+func (a *App) onUpDir() {
+	logger.Log("app", "onUpDir: returning to folder list")
+	a.mu.Lock()
+	a.stopTailLocked()
+	srv := a.currentServer
+	a.currentFolder = nil
+	a.currentFile = nil
+	a.mu.Unlock()
+
+	a.viewerPane.Clear()
+
+	if srv != nil {
+		folders := srv.EffectiveFolders()
+		a.filePane.SetFolders(folders)
+		a.statusBar.SetContext(fmt.Sprintf("[green]%s[-] — select a folder", srv.Name))
+	}
+	a.updateShortcutsForFocus()
+}
+
 func (a *App) startConnection(srv config.ServerConfig) {
 	a.mu.Lock()
+	folder := a.currentFolder
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	a.connectCancel = cancel
 	a.mu.Unlock()
 
+	if folder == nil {
+		return
+	}
+
 	a.FocusPane(1)
 	a.statusBar.SetContext(fmt.Sprintf("[yellow]Connecting to[-] %s...", srv.Name))
-	logger.Log("app", "startConnection: launching loadFiles goroutine")
+	logger.Log("app", "startConnection: launching loadFilesForFolder goroutine")
 
-	go a.loadFiles(ctx, srv)
+	go a.loadFilesForFolder(ctx, srv, *folder)
 }
 
 func (a *App) cancelConnectLocked() {
@@ -314,11 +396,11 @@ func (a *App) cancelConnectLocked() {
 	}
 }
 
-func (a *App) loadFiles(ctx context.Context, srv config.ServerConfig) {
-	logger.Log("app", "loadFiles: GetClient for %s ...", srv.Name)
+func (a *App) loadFilesForFolder(ctx context.Context, srv config.ServerConfig, folder config.LogFolder) {
+	logger.Log("app", "loadFilesForFolder: GetClient for %s (folder=%s)...", srv.Name, folder.Path)
 	client, err := a.pool.GetClient(ctx, srv)
 	if err != nil {
-		logger.Log("app", "loadFiles: GetClient failed: %v (ctx.Err=%v)", err, ctx.Err())
+		logger.Log("app", "loadFilesForFolder: GetClient failed: %v (ctx.Err=%v)", err, ctx.Err())
 		if ctx.Err() != nil {
 			return
 		}
@@ -329,19 +411,19 @@ func (a *App) loadFiles(ctx context.Context, srv config.ServerConfig) {
 			a.viewerPane.SetMessage("[red]Unable to connect[-]\n\n[white]" + errMsg + "[-]")
 			a.FocusPane(0)
 		})
-		logger.Log("app", "loadFiles: queued error update (goroutine launched)")
+		logger.Log("app", "loadFilesForFolder: queued error update (goroutine launched)")
 		return
 	}
-	logger.Log("app", "loadFiles: GetClient succeeded, listing files")
+	logger.Log("app", "loadFilesForFolder: GetClient succeeded, listing files")
 
 	opts := ssh.CommandOpts{}
 	if srv.Sudo {
 		opts.SudoPassword = a.pool.GetSudoPassword(srv)
 	}
 
-	files, err := ssh.ListFiles(client, srv.LogPath, srv.FilePatterns, opts)
+	files, err := ssh.ListFiles(client, folder.Path, folder.FilePatterns, opts)
 	if err != nil {
-		logger.Log("app", "loadFiles: ListFiles failed: %v", err)
+		logger.Log("app", "loadFilesForFolder: ListFiles failed: %v", err)
 		if strings.Contains(err.Error(), "sudo authentication failed") {
 			a.pool.ClearSudoPassword(srv)
 			a.queueUpdate(func() {
@@ -368,9 +450,12 @@ func (a *App) loadFiles(ctx context.Context, srv config.ServerConfig) {
 		return
 	}
 
-	logger.Log("app", "loadFiles: got %d files, queuing UI update", len(files))
+	// Determine if this server has multiple folders (show "/ .." row)
+	showUpDir := len(srv.EffectiveFolders()) > 1
+
+	logger.Log("app", "loadFilesForFolder: got %d files, queuing UI update", len(files))
 	a.queueUpdate(func() {
-		a.filePane.SetFiles(srv.LogPath, files)
+		a.filePane.SetFiles(folder.Path, files, showUpDir)
 		a.statusBar.SetContext(fmt.Sprintf("[green]Connected to[-] %s", srv.Name))
 	})
 }
@@ -378,16 +463,18 @@ func (a *App) loadFiles(ctx context.Context, srv config.ServerConfig) {
 func (a *App) onFileSelected(idx int, file ssh.FileInfo) {
 	a.mu.Lock()
 	srv := a.currentServer
-	if srv == nil {
+	folder := a.currentFolder
+	if srv == nil || folder == nil {
 		a.mu.Unlock()
 		return
 	}
 	a.stopTailLocked()
 	a.currentFile = &file
 	srvCopy := *srv
+	folderPath := folder.Path
 	a.mu.Unlock()
 
-	fullPath := filepath.Join(srvCopy.LogPath, file.Name)
+	fullPath := filepath.Join(folderPath, file.Name)
 
 	a.filePane.MarkSelected(idx)
 	a.statusBar.SetContext(fmt.Sprintf("[green]%s[-] %s", srvCopy.Name, fullPath))

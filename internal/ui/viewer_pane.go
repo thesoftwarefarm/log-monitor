@@ -55,10 +55,9 @@ func (dw *drawWriter) Write(p []byte) (int, error) {
 	dw.lineBuf.WriteString(remainder)
 	dw.mu.Unlock()
 
-	// Colorize complete lines and write to the text view.
-	colorized := colorizeBlock(strings.TrimSuffix(complete, "\n"))
-	colorized += "\n"
-	_, err := io.WriteString(dw.tv, colorized)
+	// Escape brackets so tview doesn't misparse them as color tags.
+	escaped := escapeBrackets(complete)
+	_, err := io.WriteString(dw.tv, escaped)
 
 	dw.mu.Lock()
 	if !dw.pending {
@@ -319,13 +318,18 @@ func (vp *ViewerPane) StopSpinner() {
 	}
 }
 
-// SetText replaces the current content, applying log colorization.
+// SetText replaces the current content, escaping brackets for tview safety.
 func (vp *ViewerPane) SetText(text string) {
 	vp.textView.SetTextAlign(tview.AlignLeft)
 	vp.textView.Clear()
-	vp.textView.SetText(colorizeBlock(text))
+	vp.textView.SetText(escapeBrackets(text))
 	vp.textView.ScrollToEnd()
 	vp.updateLineCount()
+}
+
+// escapeBrackets escapes literal `[` so tview doesn't misparse them as color tags.
+func escapeBrackets(s string) string {
+	return strings.ReplaceAll(s, "[", "[[]")
 }
 
 // SetMessage displays a centered message in the viewer (e.g. error state).
