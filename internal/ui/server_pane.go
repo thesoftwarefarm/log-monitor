@@ -20,6 +20,8 @@ type ServerPane struct {
 	// Fuzzy filter state
 	filterQuery    string
 	filteredIdxMap []int // maps displayed list index (after header) → index into servers[]
+
+	onFilterChange func(query string)
 }
 
 func NewServerPane(servers []config.ServerConfig) *ServerPane {
@@ -119,6 +121,9 @@ func (sp *ServerPane) rebuildList() {
 // applyFilter rebuilds the list based on the current filterQuery.
 func (sp *ServerPane) applyFilter() {
 	sp.rebuildList()
+	if sp.onFilterChange != nil {
+		sp.onFilterChange(sp.filterQuery)
+	}
 }
 
 // SetSelectedFunc sets the callback for when a location is selected.
@@ -143,10 +148,18 @@ func (sp *ServerPane) HasActiveFilter() bool {
 	return sp.filterQuery != ""
 }
 
+// SetFilterChangeFunc sets the callback for when the filter query changes.
+func (sp *ServerPane) SetFilterChangeFunc(fn func(query string)) {
+	sp.onFilterChange = fn
+}
+
 // ClearFilter resets the filter query and rebuilds the list.
 func (sp *ServerPane) ClearFilter() {
 	sp.filterQuery = ""
 	sp.rebuildList()
+	if sp.onFilterChange != nil {
+		sp.onFilterChange("")
+	}
 }
 
 // Widget returns the underlying tview primitive.

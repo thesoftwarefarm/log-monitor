@@ -32,6 +32,8 @@ type FilePane struct {
 	filterQuery    string
 	filteredIdxMap []int // maps displayed table row (after header) → index into files[]
 
+	onFilterChange func(query string)
+
 	// Folder mode state
 	mode           filePaneMode
 	folders        []config.LogFolder
@@ -88,6 +90,16 @@ func NewFilePane() *FilePane {
 
 	// Input capture for fuzzy filtering (only in file mode)
 	fp.table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// When the pane is empty (no files/folders loaded), swallow
+		// navigation keys so tview doesn't loop looking for a selectable row.
+		if fp.files == nil && fp.folders == nil {
+			switch event.Key() {
+			case tcell.KeyUp, tcell.KeyDown, tcell.KeyEnter:
+				return nil
+			}
+			return event
+		}
+
 		if fp.mode == modeFolders {
 			return event // no type-to-filter in folder mode
 		}
@@ -325,6 +337,9 @@ func (fp *FilePane) rebuildFolderTable() {
 // applyFilter rebuilds the table based on the current filterQuery.
 func (fp *FilePane) applyFilter() {
 	fp.rebuildTable()
+	if fp.onFilterChange != nil {
+		fp.onFilterChange(fp.filterQuery)
+	}
 }
 
 // SetSelectedFunc sets the callback for when a file is selected.
@@ -450,10 +465,18 @@ func (fp *FilePane) HasActiveFilter() bool {
 	return fp.filterQuery != ""
 }
 
+// SetFilterChangeFunc sets the callback for when the filter query changes.
+func (fp *FilePane) SetFilterChangeFunc(fn func(query string)) {
+	fp.onFilterChange = fn
+}
+
 // ClearFilter resets the filter query and rebuilds the table.
 func (fp *FilePane) ClearFilter() {
 	fp.filterQuery = ""
 	fp.rebuildTable()
+	if fp.onFilterChange != nil {
+		fp.onFilterChange("")
+	}
 }
 
 // GetDir returns the current directory being listed.

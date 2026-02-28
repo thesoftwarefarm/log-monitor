@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,6 +40,9 @@ type App struct {
 	tailCtx       context.Context
 	tailCancel    context.CancelFunc
 	connectCancel context.CancelFunc // cancels in-progress SSH connection
+
+	// Last non-filter context message, restored when filter is cleared
+	lastContext string
 
 	// Focus tracking
 	panes      []tview.Primitive
@@ -81,6 +85,17 @@ func NewApp(cfg *config.Config) *App {
 		a.statusBar.SetContext(" " + msg)
 	})
 
+	// Filter change callbacks — show active filter in status bar
+	filterChanged := func(query string) {
+		if query != "" {
+			a.statusBar.SetFilter(query)
+		} else {
+			a.statusBar.SetContext(a.lastContext)
+		}
+	}
+	a.serverPane.SetFilterChangeFunc(filterChanged)
+	a.filePane.SetFilterChangeFunc(filterChanged)
+
 	// Build layout:
 	// Row: [ServerPane(30 cols) | FilePane(1x) | ViewerPane(2x)]
 	// Below: StatusBar (1 row)
@@ -91,7 +106,7 @@ func NewApp(cfg *config.Config) *App {
 
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(panes, 0, 1, true).
-		AddItem(a.statusBar.Widget(), 2, 0, false)
+		AddItem(a.statusBar.Widget(), 1, 0, false)
 
 	a.pages = tview.NewPages()
 	a.pages.AddPage("main", layout, true, true)
@@ -128,6 +143,12 @@ func NewApp(cfg *config.Config) *App {
 	return a
 }
 
+// setContext updates the status bar context and remembers it for filter restore.
+func (a *App) setContext(msg string) {
+	a.lastContext = msg
+	a.statusBar.SetContext(msg)
+}
+
 // queueUpdate sends a UI update to the tview event loop. Unlike
 // QueueUpdateDraw this never blocks: it fires and forgets so background
 // goroutines can't deadlock when the event loop has already stopped.
@@ -144,8 +165,14 @@ func (a *App) queueUpdate(f func()) {
 	}()
 }
 
+// setTerminalTitle sets the terminal window/tab title via OSC escape sequence.
+func setTerminalTitle(title string) {
+	fmt.Fprintf(os.Stdout, "\033]0;%s\007", title)
+}
+
 // Run starts the TUI event loop.
 func (a *App) Run() error {
+	setTerminalTitle("Log Monitor")
 	defer a.shutdown()
 	return a.tviewApp.Run()
 }
@@ -173,6 +200,8 @@ func (a *App) updateShortcutsForFocus() {
 		a.statusBar.SetShortcuts(ShortcutsViewerPane)
 	case a.focusIndex == 1 && a.filePane.IsInFolderMode():
 		a.statusBar.SetShortcuts(ShortcutsFolderPane)
+	case a.focusIndex == 1:
+		a.statusBar.SetShortcuts(ShortcutsFilePane)
 	default:
 		a.statusBar.SetShortcuts(ShortcutsListPane)
 	}
@@ -273,7 +302,7 @@ func (a *App) StopTail() {
 	a.viewerPane.StopSpinner()
 	a.viewerPane.ResetTitle()
 	if srv != nil {
-		a.statusBar.SetContext(fmt.Sprintf("[yellow]Tail stopped[-] — %s", srv.Name))
+		a.setContext(fmt.Sprintf("[yellow]Tail stopped[-] — %s", srv.Name))
 	} else {
 		a.statusBar.Reset()
 	}
@@ -312,6 +341,7 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 	a.viewerPane.Clear()
 	a.filePane.Clear()
 	a.serverPane.MarkSelected(idx)
+	setTerminalTitle(fmt.Sprintf("Log Monitor — %s", srv.Name))
 
 	folders := srv.EffectiveFolders()
 
@@ -319,7 +349,7 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 		// Multi-folder server: show folder list
 		a.filePane.SetFolders(folders)
 		a.FocusPane(1)
-		a.statusBar.SetContext(fmt.Sprintf("[green]%s[-] — select a folder", srv.Name))
+		a.setContext(fmt.Sprintf("[green]%s[-] — select a folder", srv.Name))
 		return
 	}
 
@@ -332,7 +362,7 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 	if srv.Sudo && a.pool.GetSudoPassword(srv) == "" {
 		a.promptSudoPassword(srv.Name, func(pw string) {
 			if pw == "" {
-				a.statusBar.SetContext("[yellow]Sudo password cancelled[-]")
+				a.setContext("[yellow]Sudo password cancelled[-]")
 				a.FocusPane(0)
 				return
 			}
@@ -364,7 +394,7 @@ func (a *App) onFolderSelected(idx int, folder config.LogFolder) {
 	if srvCopy.Sudo && a.pool.GetSudoPassword(srvCopy) == "" {
 		a.promptSudoPassword(srvCopy.Name, func(pw string) {
 			if pw == "" {
-				a.statusBar.SetContext("[yellow]Sudo password cancelled[-]")
+				a.setContext("[yellow]Sudo password cancelled[-]")
 				a.FocusPane(0)
 				return
 			}
@@ -391,7 +421,7 @@ func (a *App) onUpDir() {
 	if srv != nil {
 		folders := srv.EffectiveFolders()
 		a.filePane.SetFolders(folders)
-		a.statusBar.SetContext(fmt.Sprintf("[green]%s[-] — select a folder", srv.Name))
+		a.setContext(fmt.Sprintf("[green]%s[-] — select a folder", srv.Name))
 	}
 	a.updateShortcutsForFocus()
 }
@@ -408,7 +438,7 @@ func (a *App) startConnection(srv config.ServerConfig) {
 	}
 
 	a.FocusPane(1)
-	a.statusBar.SetContext(fmt.Sprintf("[yellow]Connecting to[-] %s...", srv.Name))
+	a.setContext(fmt.Sprintf("[yellow]Connecting to[-] %s...", srv.Name))
 	logger.Log("app", "startConnection: launching loadFilesForFolder goroutine")
 
 	go a.loadFilesForFolder(ctx, srv, *folder)
@@ -455,7 +485,7 @@ func (a *App) loadFilesForFolder(ctx context.Context, srv config.ServerConfig, f
 				a.statusBar.SetError("Sudo authentication failed — try again")
 				a.promptSudoPassword(srv.Name, func(pw string) {
 					if pw == "" {
-						a.statusBar.SetContext("[yellow]Sudo password cancelled[-]")
+						a.setContext("[yellow]Sudo password cancelled[-]")
 						a.FocusPane(0)
 						return
 					}
@@ -481,7 +511,7 @@ func (a *App) loadFilesForFolder(ctx context.Context, srv config.ServerConfig, f
 	logger.Log("app", "loadFilesForFolder: got %d files, queuing UI update", len(files))
 	a.queueUpdate(func() {
 		a.filePane.SetFiles(folder.Path, files, showUpDir)
-		a.statusBar.SetContext(fmt.Sprintf("[green]Connected to[-] %s", srv.Name))
+		a.setContext(fmt.Sprintf("[green]%s[-] — Select a file", srv.Name))
 	})
 }
 
@@ -502,7 +532,8 @@ func (a *App) onFileSelected(idx int, file ssh.FileInfo) {
 	fullPath := filepath.Join(folderPath, file.Name)
 
 	a.filePane.MarkSelected(idx)
-	a.statusBar.SetContext(fmt.Sprintf("[green]%s[-] %s", srvCopy.Name, fullPath))
+	a.setContext(fmt.Sprintf("[green]%s[-] %s", srvCopy.Name, fullPath))
+	setTerminalTitle(fmt.Sprintf("Log Monitor — %s:%s", srvCopy.Name, fullPath))
 
 	// Already on the main goroutine (SetSelectedFunc callback), so update
 	// the UI directly. QueueUpdateDraw would deadlock here because it blocks
@@ -567,7 +598,7 @@ func (a *App) loadAndTailFile(srv config.ServerConfig, file ssh.FileInfo, fullPa
 	a.mu.Unlock()
 
 	a.queueUpdate(func() {
-		a.statusBar.SetContext(fmt.Sprintf("[green]Tailing[-] %s:%s", srv.Name, fullPath))
+		a.setContext(fmt.Sprintf("[green]Tailing[-] %s:%s", srv.Name, fullPath))
 		a.viewerPane.StartSpinner(fmt.Sprintf("Tailing: %s", file.Name))
 	})
 }
@@ -613,4 +644,5 @@ func (a *App) shutdown() {
 		a.mu.Unlock()
 	}
 	a.pool.CloseAll()
+	setTerminalTitle("")
 }

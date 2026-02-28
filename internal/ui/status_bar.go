@@ -11,12 +11,13 @@ const defaultShortcuts = " [yellow]q[white]: Exit | [yellow]↑↓[white]: Navig
 // Pane-specific shortcut hints.
 const (
 	ShortcutsListPane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]q[white]: Exit"
-	ShortcutsFolderPane = " [yellow]Enter[white]: Select folder | [yellow]Tab[white]: Switch pane | [yellow]q[white]: Exit"
+	ShortcutsFolderPane = " [yellow]Enter[white]: Select folder/file | [yellow]Tab[white]: Switch pane | [yellow]q[white]: Exit"
+	ShortcutsFilePane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select file | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]q[white]: Exit"
 	ShortcutsViewerPane = " [yellow]/[white]: Search | [yellow]n/N[white]: Next/Prev | [yellow]g/G[white]: Top/Bottom | [yellow]r[white]: Refresh | [yellow]Esc[white]: Stop tail | [yellow]q[white]: Exit"
 )
 
-// StatusBar has two rows: a context bar (server/file info, errors) and a
-// shortcuts bar (always shows keybindings).
+// StatusBar is a single-row bar with context messages on the left and
+// keybinding hints on the right.
 type StatusBar struct {
 	contextView   *tview.TextView
 	shortcutsView *tview.TextView
@@ -33,12 +34,12 @@ func NewStatusBar() *StatusBar {
 	sb.contextView.SetTextAlign(tview.AlignLeft)
 
 	sb.shortcutsView.SetDynamicColors(true)
-	sb.shortcutsView.SetTextAlign(tview.AlignLeft)
+	sb.shortcutsView.SetTextAlign(tview.AlignRight)
 	sb.shortcutsView.SetText(defaultShortcuts)
 
-	sb.flex = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(sb.contextView, 1, 0, false).
-		AddItem(sb.shortcutsView, 1, 0, false)
+	sb.flex = tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(sb.contextView, 0, 1, false).
+		AddItem(sb.shortcutsView, 0, 1, false)
 
 	return sb
 }
@@ -51,6 +52,15 @@ func (sb *StatusBar) SetContext(msg string) {
 // ClearContext clears the context bar.
 func (sb *StatusBar) ClearContext() {
 	sb.contextView.SetText("")
+}
+
+// SetFilter displays the active filter query in the context bar, or clears it.
+func (sb *StatusBar) SetFilter(query string) {
+	if query == "" {
+		sb.contextView.SetText("")
+	} else {
+		sb.contextView.SetText(fmt.Sprintf(" [yellow]Filter:[-] %s", query))
+	}
 }
 
 // SetError displays a transient error message in the context bar.
