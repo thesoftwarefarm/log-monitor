@@ -4,7 +4,9 @@
       "Bash(go build:*)",
       "Bash(go env:*)",
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(go doc:*)",
+      "Bash(go list:*)"
     ]
   }
 }

@@ -100,6 +100,9 @@ func NewApp(cfg *config.Config) *App {
 	// Setup keybindings
 	SetupKeybindings(tviewApp, a)
 
+	// Enable mouse support so clicks and scrolling work.
+	tviewApp.EnableMouse(true)
+
 	// Mouse click to focus pane
 	tviewApp.SetMouseCapture(func(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
 		if action == tview.MouseLeftDown {
@@ -118,6 +121,9 @@ func NewApp(cfg *config.Config) *App {
 		}
 		return event, action
 	})
+
+	// Set initial border colors (first pane is focused).
+	a.updatePaneBorders()
 
 	return a
 }
@@ -169,6 +175,25 @@ func (a *App) updateShortcutsForFocus() {
 		a.statusBar.SetShortcuts(ShortcutsFolderPane)
 	default:
 		a.statusBar.SetShortcuts(ShortcutsListPane)
+	}
+	a.updatePaneBorders()
+}
+
+// updatePaneBorders highlights the focused pane's border in light green and resets others to white.
+func (a *App) updatePaneBorders() {
+	boxes := []*tview.Box{
+		a.serverPane.List().Box,
+		a.filePane.Table().Box,
+		a.viewerPane.TextView().Box,
+	}
+	for i, box := range boxes {
+		if i == a.focusIndex {
+			box.SetBorderColor(tcell.ColorLightGreen)
+			box.SetTitleColor(tcell.ColorLightGreen)
+		} else {
+			box.SetBorderColor(tcell.ColorWhite)
+			box.SetTitleColor(tcell.ColorWhite)
+		}
 	}
 }
 
