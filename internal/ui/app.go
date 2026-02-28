@@ -58,6 +58,7 @@ type App struct {
 	// Focus tracking
 	panes      []tview.Primitive
 	focusIndex int
+	copyMode   bool
 
 	// Set to 1 after app.Stop() — background goroutines must not call
 	// QueueUpdateDraw after this point (it blocks forever).
@@ -288,6 +289,9 @@ func (a *App) FocusPane(idx int) {
 
 // updateShortcutsForFocus updates the status bar shortcuts based on the focused pane.
 func (a *App) updateShortcutsForFocus() {
+	// Any focus change exits copy mode.
+	a.copyMode = false
+
 	switch {
 	case a.focusIndex == 2:
 		a.statusBar.SetShortcuts(ShortcutsViewerPane)
@@ -299,6 +303,25 @@ func (a *App) updateShortcutsForFocus() {
 		a.statusBar.SetShortcuts(ShortcutsListPane)
 	}
 	a.updatePaneBorders()
+	a.updateMouseState()
+}
+
+// updateMouseState disables tview mouse capture when copy mode is active,
+// allowing the terminal to handle native text selection. Re-enables mouse
+// otherwise so clicks and scrolling work normally.
+func (a *App) updateMouseState() {
+	if a.copyMode {
+		a.tviewApp.EnableMouse(false)
+	} else {
+		a.tviewApp.EnableMouse(true)
+	}
+}
+
+// restoreFocusFromModal restores focus to the current pane and updates mouse
+// state. Used when dismissing modal dialogs to ensure mouse capture is correct.
+func (a *App) restoreFocusFromModal() {
+	a.tviewApp.SetFocus(a.panes[a.focusIndex])
+	a.updateMouseState()
 }
 
 // updatePaneBorders highlights the focused pane's border in light green and resets others to white.
@@ -333,17 +356,17 @@ func (a *App) promptSudoPassword(serverName string, callback func(string)) {
 	form.AddButton("OK", func() {
 		pw := form.GetFormItemByLabel("Password:").(*tview.InputField).GetText()
 		a.pages.RemovePage("sudo-prompt")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 		callback(pw)
 	})
 	form.AddButton("Cancel", func() {
 		a.pages.RemovePage("sudo-prompt")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 		callback("")
 	})
 	form.SetCancelFunc(func() {
 		a.pages.RemovePage("sudo-prompt")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 		callback("")
 	})
 	form.SetBorder(true)
@@ -360,6 +383,7 @@ func (a *App) promptSudoPassword(serverName string, callback func(string)) {
 		AddItem(nil, 0, 1, false)
 
 	a.pages.AddPage("sudo-prompt", modal, true, true)
+	a.tviewApp.EnableMouse(true)
 	a.tviewApp.SetFocus(form)
 }
 
@@ -370,16 +394,16 @@ func (a *App) promptTailFilter(currentQuery string, callback func(string)) {
 	form.AddButton("OK", func() {
 		q := form.GetFormItemByLabel("Filter:").(*tview.InputField).GetText()
 		a.pages.RemovePage("filter-prompt")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 		callback(q)
 	})
 	form.AddButton("Cancel", func() {
 		a.pages.RemovePage("filter-prompt")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 	})
 	form.SetCancelFunc(func() {
 		a.pages.RemovePage("filter-prompt")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 	})
 	form.SetBorder(true)
 	form.SetTitle(" Tail Filter ")
@@ -395,6 +419,7 @@ func (a *App) promptTailFilter(currentQuery string, callback func(string)) {
 		AddItem(nil, 0, 1, false)
 
 	a.pages.AddPage("filter-prompt", modal, true, true)
+	a.tviewApp.EnableMouse(true)
 	a.tviewApp.SetFocus(form)
 }
 
@@ -442,6 +467,20 @@ func (a *App) ShowFilterPrompt() {
 // FocusedOnViewer returns true if the viewer pane currently has focus.
 func (a *App) FocusedOnViewer() bool {
 	return a.focusIndex == 2
+}
+
+// ToggleCopyMode toggles copy mode (native text selection) when the viewer is focused.
+func (a *App) ToggleCopyMode() {
+	if a.focusIndex != 2 {
+		return
+	}
+	a.copyMode = !a.copyMode
+	a.updateMouseState()
+	if a.copyMode {
+		a.statusBar.SetShortcuts(ShortcutsViewerCopyMode)
+	} else {
+		a.statusBar.SetShortcuts(ShortcutsViewerPane)
+	}
 }
 
 // ClearFocusedFilter clears the filter on the currently focused pane, if any.
@@ -814,7 +853,7 @@ func (a *App) ShowDownloadDialog() {
 		dir := form.GetFormItemByLabel("Path:").(*tview.InputField).GetText()
 		name := form.GetFormItemByLabel("Filename:").(*tview.InputField).GetText()
 		a.pages.RemovePage("download-dialog")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 
 		a.mu.Lock()
 		srv := a.currentServer
@@ -832,11 +871,11 @@ func (a *App) ShowDownloadDialog() {
 	})
 	form.AddButton("Cancel", func() {
 		a.pages.RemovePage("download-dialog")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 	})
 	form.SetCancelFunc(func() {
 		a.pages.RemovePage("download-dialog")
-		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+		a.restoreFocusFromModal()
 	})
 	form.SetBorder(true)
 	form.SetTitle(" Download File ")
@@ -852,6 +891,7 @@ func (a *App) ShowDownloadDialog() {
 		AddItem(nil, 0, 1, false)
 
 	a.pages.AddPage("download-dialog", modal, true, true)
+	a.tviewApp.EnableMouse(true)
 	a.tviewApp.SetFocus(form)
 }
 

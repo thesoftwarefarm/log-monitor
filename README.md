@@ -14,6 +14,7 @@ A terminal-based log monitoring application that allows you to tail and monitor 
 - **Fuzzy search**: Type to filter server and file lists
 - **Auto-selection**: CLI flags to jump directly to a server, folder, or file at startup
 - **Interactive TUI**: Three-pane terminal interface built with [tview](https://github.com/rivo/tview)
+- **Copy mode**: Press `F9` to enable native text selection for copying log content
 - **Mouse support**: Click to focus panes, scroll to navigate
 
 ## Prerequisites
@@ -219,8 +220,9 @@ The application has a three-pane layout with a status bar:
 | `G` / `End` | Jump to bottom |
 | `F5` | Download current file |
 | `F7` | Set tail filter (grep-like) |
+| `F9` | Toggle copy mode (native text selection) |
 | `r` | Refresh file list |
-| `Esc` | Stop tail |
+| `Esc` | Stop tail / exit copy mode |
 
 ## Authentication Methods
 

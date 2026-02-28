@@ -35,17 +35,19 @@ type FilePane struct {
 	onFilterChange func(query string)
 
 	// Folder mode state
-	mode           filePaneMode
-	folders        []config.LogFolder
-	hasUpDir       bool // true when a "/ .." row is present in file mode
-	onFolderSelect func(idx int, folder config.LogFolder)
-	onUpDir        func()
+	mode              filePaneMode
+	folders           []config.LogFolder
+	selectedFolderIdx int // last selected folder index, -1 means none
+	hasUpDir          bool // true when a "/ .." row is present in file mode
+	onFolderSelect    func(idx int, folder config.LogFolder)
+	onUpDir           func()
 }
 
 func NewFilePane() *FilePane {
 	fp := &FilePane{
-		table:           tview.NewTable(),
-		selectedFileIdx: -1,
+		table:             tview.NewTable(),
+		selectedFileIdx:   -1,
+		selectedFolderIdx: -1,
 	}
 
 	fp.table.SetTitle(" Files ").SetBorder(true)
@@ -65,6 +67,7 @@ func NewFilePane() *FilePane {
 
 		if fp.mode == modeFolders {
 			if fp.onFolderSelect != nil && displayIdx >= 0 && displayIdx < len(fp.folders) {
+				fp.selectedFolderIdx = displayIdx
 				fp.onFolderSelect(displayIdx, fp.folders[displayIdx])
 			}
 			return
@@ -330,8 +333,12 @@ func (fp *FilePane) rebuildFolderTable() {
 				SetMaxWidth(12))
 	}
 
-	fp.table.ScrollToBeginning()
-	fp.table.Select(1, 0)
+	// Restore cursor to last selected folder, or default to first.
+	targetRow := 1
+	if fp.selectedFolderIdx >= 0 && fp.selectedFolderIdx < len(fp.folders) {
+		targetRow = fp.selectedFolderIdx + 1
+	}
+	fp.table.Select(targetRow, 0)
 }
 
 // applyFilter rebuilds the table based on the current filterQuery.
@@ -418,6 +425,7 @@ func (fp *FilePane) Clear() {
 	fp.dir = ""
 	fp.folderPath = ""
 	fp.selectedFileIdx = -1
+	fp.selectedFolderIdx = -1
 	fp.filterQuery = ""
 	fp.hasUpDir = false
 	fp.table.Clear()
@@ -436,6 +444,7 @@ func (fp *FilePane) SetMessage(msg string) {
 	fp.dir = ""
 	fp.folderPath = ""
 	fp.selectedFileIdx = -1
+	fp.selectedFolderIdx = -1
 	fp.filterQuery = ""
 	fp.hasUpDir = false
 	fp.table.Clear()

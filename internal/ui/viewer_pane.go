@@ -13,6 +13,7 @@ import (
 )
 
 const defaultViewerTitle = " Log Viewer "
+const maxLines = 10000
 
 var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
 
@@ -24,12 +25,13 @@ var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 // are colorized and forwarded to the text view. Any trailing partial line is
 // kept in lineBuf until more data arrives.
 type drawWriter struct {
-	tv      *tview.TextView
-	app     *tview.Application
-	vp      *ViewerPane
-	mu      sync.Mutex
-	pending bool
-	lineBuf bytes.Buffer
+	tv           *tview.TextView
+	app          *tview.Application
+	vp           *ViewerPane
+	mu           sync.Mutex
+	pending      bool
+	pendingLines int
+	lineBuf      bytes.Buffer
 }
 
 func (dw *drawWriter) Write(p []byte) (int, error) {
@@ -70,16 +72,21 @@ func (dw *drawWriter) Write(p []byte) (int, error) {
 	}
 	_, err := io.WriteString(dw.tv, escaped)
 
+	newLines := strings.Count(complete, "\n")
+
 	dw.mu.Lock()
+	dw.pendingLines += newLines
 	if !dw.pending {
 		dw.pending = true
 		dw.mu.Unlock()
 		go dw.app.QueueUpdateDraw(func() {
 			dw.tv.ScrollToEnd()
 			dw.mu.Lock()
+			lines := dw.pendingLines
+			dw.pendingLines = 0
 			dw.pending = false
 			dw.mu.Unlock()
-			dw.vp.updateLineCount()
+			dw.vp.addLines(lines)
 		})
 	} else {
 		dw.mu.Unlock()
@@ -118,7 +125,7 @@ func NewViewerPane(app *tview.Application) *ViewerPane {
 	vp.textView.SetDynamicColors(true)
 	vp.textView.SetScrollable(true)
 	vp.textView.SetWordWrap(true)
-	vp.textView.SetMaxLines(10000)
+	vp.textView.SetMaxLines(maxLines)
 
 	vp.writer = &drawWriter{tv: vp.textView, app: app, vp: vp}
 
@@ -218,14 +225,13 @@ func (vp *ViewerPane) ResetTitle() {
 	vp.lineCount = 0
 }
 
-// updateLineCount counts lines in the text view and updates the spinner title if active.
-func (vp *ViewerPane) updateLineCount() {
-	text := vp.textView.GetText(true)
-	if text == "" {
-		vp.lineCount = 0
-		return
+// addLines increments the line count by n, capping at maxLines.
+// Must be called on the main goroutine (inside QueueUpdateDraw).
+func (vp *ViewerPane) addLines(n int) {
+	vp.lineCount += n
+	if vp.lineCount > maxLines {
+		vp.lineCount = maxLines
 	}
-	vp.lineCount = strings.Count(text, "\n") + 1
 }
 
 // formatLineCount returns the line count formatted with commas.
@@ -317,7 +323,14 @@ func (vp *ViewerPane) SetText(text string) {
 	}
 	vp.textView.SetText(escaped)
 	vp.textView.ScrollToEnd()
-	vp.updateLineCount()
+	if filtered == "" {
+		vp.lineCount = 0
+	} else {
+		vp.lineCount = strings.Count(filtered, "\n")
+		if !strings.HasSuffix(filtered, "\n") {
+			vp.lineCount++
+		}
+	}
 }
 
 // SetMessage displays a centered message in the viewer (e.g. error state).

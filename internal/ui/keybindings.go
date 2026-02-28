@@ -39,6 +39,10 @@ func SetupKeybindings(app *tview.Application, a *App) {
 			a.CycleFocus(-1)
 			return nil
 		case tcell.KeyEscape:
+			if a.copyMode {
+				a.ToggleCopyMode()
+				return nil
+			}
 			if a.ClearFocusedFilter() {
 				return nil
 			}
@@ -46,6 +50,9 @@ func SetupKeybindings(app *tview.Application, a *App) {
 			return nil
 		case tcell.KeyF5:
 			a.ShowDownloadDialog()
+			return nil
+		case tcell.KeyF9:
+			a.ToggleCopyMode()
 			return nil
 		case tcell.KeyF7:
 			a.ShowFilterPrompt()
