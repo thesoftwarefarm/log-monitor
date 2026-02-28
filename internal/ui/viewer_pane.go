@@ -65,6 +65,9 @@ func (dw *drawWriter) Write(p []byte) (int, error) {
 
 	// Escape style tags so tview doesn't misparse them as color tags.
 	escaped := tview.Escape(complete)
+	if filter != "" {
+		escaped = highlightFilter(escaped, filter)
+	}
 	_, err := io.WriteString(dw.tv, escaped)
 
 	dw.mu.Lock()
@@ -138,6 +141,32 @@ func (vp *ViewerPane) GetTailFilter() string {
 	vp.tailFilterMu.Lock()
 	defer vp.tailFilterMu.Unlock()
 	return vp.tailFilter
+}
+
+// highlightFilter wraps every occurrence of query in escaped text with
+// yellow-background highlight tags. Case-insensitive; preserves original case.
+// The query is escaped so it matches against already-escaped text.
+func highlightFilter(escaped, query string) string {
+	eq := tview.Escape(query)
+	if eq == "" {
+		return escaped
+	}
+	lowerEq := strings.ToLower(eq)
+	var buf strings.Builder
+	rest := escaped
+	for {
+		idx := strings.Index(strings.ToLower(rest), lowerEq)
+		if idx == -1 {
+			buf.WriteString(rest)
+			break
+		}
+		buf.WriteString(rest[:idx])
+		buf.WriteString("[black:yellow]")
+		buf.WriteString(rest[idx : idx+len(eq)])
+		buf.WriteString("[white:-]")
+		rest = rest[idx+len(eq):]
+	}
+	return buf.String()
 }
 
 // filterLines filters complete text (with trailing newlines) keeping only lines
@@ -281,7 +310,12 @@ func (vp *ViewerPane) SetText(text string) {
 	vp.textView.SetTextAlign(tview.AlignLeft)
 	vp.textView.Clear()
 	filtered := vp.filterText(text)
-	vp.textView.SetText(tview.Escape(filtered))
+	escaped := tview.Escape(filtered)
+	filter := vp.GetTailFilter()
+	if filter != "" {
+		escaped = highlightFilter(escaped, filter)
+	}
+	vp.textView.SetText(escaped)
 	vp.textView.ScrollToEnd()
 	vp.updateLineCount()
 }
