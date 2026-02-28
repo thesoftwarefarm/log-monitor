@@ -44,6 +44,9 @@ func SetupKeybindings(app *tview.Application, a *App) {
 			}
 			a.StopTail()
 			return nil
+		case tcell.KeyF5:
+			a.ShowDownloadDialog()
+			return nil
 		case tcell.KeyF7:
 			a.ShowFilterPrompt()
 			return nil

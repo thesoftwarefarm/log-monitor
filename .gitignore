@@ -3,3 +3,4 @@
 /debug.log
 # Added by goreleaser init:
 dist/
+/logs/*

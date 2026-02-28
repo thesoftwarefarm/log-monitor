@@ -13,7 +13,7 @@ const (
 	ShortcutsListPane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]q[white]: Exit"
 	ShortcutsFolderPane = " [yellow]Enter[white]: Select folder/file | [yellow]Tab[white]: Switch pane | [yellow]q[white]: Exit"
 	ShortcutsFilePane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select file | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]q[white]: Exit"
-	ShortcutsViewerPane = " [yellow]F7[white]: Filter | [yellow]g/G[white]: Top/Bottom | [yellow]r[white]: Refresh | [yellow]Esc[white]: Stop tail | [yellow]q[white]: Exit"
+	ShortcutsViewerPane = " [yellow]F5[white]: Download | [yellow]F7[white]: Filter | [yellow]g/G[white]: Top/Bottom | [yellow]r[white]: Refresh | [yellow]Esc[white]: Stop tail | [yellow]q[white]: Exit"
 )
 
 // StatusBar is a single-row bar with context messages on the left and

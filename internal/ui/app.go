@@ -675,6 +675,113 @@ func (a *App) loadAndTailFile(srv config.ServerConfig, file ssh.FileInfo, fullPa
 	})
 }
 
+// ShowDownloadDialog opens a modal form to download the currently selected remote file.
+func (a *App) ShowDownloadDialog() {
+	a.mu.Lock()
+	srv := a.currentServer
+	folder := a.currentFolder
+	file := a.currentFile
+	a.mu.Unlock()
+
+	if srv == nil || folder == nil || file == nil {
+		return
+	}
+
+	// Default local path: directory of current executable + /logs/
+	defaultDir := "."
+	if exe, err := os.Executable(); err == nil {
+		defaultDir = filepath.Join(filepath.Dir(exe), "logs")
+	}
+
+	form := tview.NewForm()
+	form.AddInputField("Path:", defaultDir, 0, nil, nil)
+	form.AddInputField("Filename:", file.Name, 0, nil, nil)
+	form.AddButton("OK", func() {
+		dir := form.GetFormItemByLabel("Path:").(*tview.InputField).GetText()
+		name := form.GetFormItemByLabel("Filename:").(*tview.InputField).GetText()
+		a.pages.RemovePage("download-dialog")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+
+		a.mu.Lock()
+		srv := a.currentServer
+		folder := a.currentFolder
+		file := a.currentFile
+		if srv == nil || folder == nil || file == nil {
+			a.mu.Unlock()
+			return
+		}
+		srvCopy := *srv
+		remotePath := filepath.Join(folder.Path, file.Name)
+		a.mu.Unlock()
+
+		go a.downloadFile(srvCopy, remotePath, dir, name)
+	})
+	form.AddButton("Cancel", func() {
+		a.pages.RemovePage("download-dialog")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+	})
+	form.SetCancelFunc(func() {
+		a.pages.RemovePage("download-dialog")
+		a.tviewApp.SetFocus(a.panes[a.focusIndex])
+	})
+	form.SetBorder(true)
+	form.SetTitle(" Download File ")
+	form.SetTitleAlign(tview.AlignCenter)
+
+	modal := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexColumn).
+			AddItem(nil, 0, 1, false).
+			AddItem(form, 60, 0, true).
+			AddItem(nil, 0, 1, false),
+			9, 0, true).
+		AddItem(nil, 0, 1, false)
+
+	a.pages.AddPage("download-dialog", modal, true, true)
+	a.tviewApp.SetFocus(form)
+}
+
+// downloadFile downloads a remote file to a local path in the background.
+func (a *App) downloadFile(srv config.ServerConfig, remotePath, localDir, localFilename string) {
+	localPath := filepath.Join(localDir, localFilename)
+
+	a.queueUpdate(func() {
+		a.statusBar.SetContext(fmt.Sprintf(" [yellow]Downloading[-] %s...", localFilename))
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client, err := a.pool.GetClient(ctx, srv)
+	if err != nil {
+		a.queueUpdate(func() {
+			a.statusBar.SetError(fmt.Sprintf("download connect: %v", err))
+		})
+		return
+	}
+
+	opts := ssh.CommandOpts{}
+	if srv.Sudo {
+		opts.SudoPassword = a.pool.GetSudoPassword(srv)
+	}
+
+	if err := ssh.DownloadFile(client, remotePath, localPath, opts); err != nil {
+		a.queueUpdate(func() {
+			a.statusBar.SetError(fmt.Sprintf("download: %v", err))
+		})
+		return
+	}
+
+	// Get downloaded file size for the status message.
+	sizeStr := ""
+	if info, err := os.Stat(localPath); err == nil {
+		sizeStr = fmt.Sprintf(" (%s)", ssh.FormatSize(info.Size()))
+	}
+
+	a.queueUpdate(func() {
+		a.setContext(fmt.Sprintf("[green]Downloaded[-] %s%s → %s", localFilename, sizeStr, localPath))
+	})
+}
+
 func (a *App) stopTailLocked() {
 	if a.tailer != nil {
 		// Cancel context and let the tailer goroutine clean up asynchronously.

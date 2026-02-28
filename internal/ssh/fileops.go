@@ -3,6 +3,8 @@ package ssh
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -82,6 +84,88 @@ func StatFile(client *gossh.Client, path string, opts CommandOpts) (*FileInfo, e
 		ModTime: time.Unix(epoch, 0),
 		IsDir:   parts[3] == "directory",
 	}, nil
+}
+
+// DownloadFile streams a remote file to a local path via cat over SSH.
+func DownloadFile(client *gossh.Client, remotePath, localPath string, opts CommandOpts) error {
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return fmt.Errorf("creating local directory: %w", err)
+	}
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("creating session: %w", err)
+	}
+	defer sess.Close()
+
+	cmd := fmt.Sprintf("cat %s", shellescape.Quote(remotePath))
+
+	f, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("creating local file: %w", err)
+	}
+	defer f.Close()
+
+	if opts.SudoPassword != "" {
+		sudoCmd := fmt.Sprintf("sudo -S %s", cmd)
+		logger.Log("ssh", "DownloadFile (sudo): %s → %s", remotePath, localPath)
+
+		var stderr bytes.Buffer
+		sess.Stderr = &stderr
+
+		stdout, err := sess.StdoutPipe()
+		if err != nil {
+			return fmt.Errorf("stdout pipe: %w", err)
+		}
+
+		stdin, err := sess.StdinPipe()
+		if err != nil {
+			return fmt.Errorf("stdin pipe: %w", err)
+		}
+
+		if err := sess.Start(sudoCmd); err != nil {
+			return fmt.Errorf("starting %q: %w", sudoCmd, err)
+		}
+
+		if _, err := fmt.Fprintf(stdin, "%s\n", opts.SudoPassword); err != nil {
+			return fmt.Errorf("writing sudo password: %w", err)
+		}
+		stdin.Close()
+
+		if _, err := io.Copy(f, stdout); err != nil {
+			return fmt.Errorf("downloading file: %w", err)
+		}
+
+		if err := sess.Wait(); err != nil {
+			stderrStr := stderr.String()
+			if strings.Contains(stderrStr, "Sorry, try again") || strings.Contains(stderrStr, "incorrect password") {
+				return fmt.Errorf("sudo authentication failed")
+			}
+			return fmt.Errorf("running %q: %w: %s", cmd, err, stderrStr)
+		}
+		return nil
+	}
+
+	logger.Log("ssh", "DownloadFile: %s → %s", remotePath, localPath)
+
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := sess.Start(cmd); err != nil {
+		return fmt.Errorf("starting %q: %w", cmd, err)
+	}
+
+	if _, err := io.Copy(f, stdout); err != nil {
+		return fmt.Errorf("downloading file: %w", err)
+	}
+
+	if err := sess.Wait(); err != nil {
+		return fmt.Errorf("running %q: %w", cmd, err)
+	}
+
+	return nil
 }
 
 func runCommand(client *gossh.Client, cmd string, opts CommandOpts) (string, error) {
