@@ -51,7 +51,6 @@ defaults:
   ssh_key: "~/.ssh/id_rsa"       # default SSH private key path
   ssh_port: 22                    # default SSH port
   tail_lines: 100                 # number of lines to show initially
-  poll_interval: 5s               # how often to refresh file metadata
 
 servers:
   # Single log directory with file pattern filtering
@@ -103,7 +102,6 @@ servers:
 | `ssh_key` | Default SSH private key path (supports `~`) | `~/.ssh/id_rsa` |
 | `ssh_port` | Default SSH port | `22` |
 | `tail_lines` | Number of lines to load initially when tailing | `100` |
-| `poll_interval` | How often to refresh file metadata | `5s` |
 
 #### Per-Server Configuration
 

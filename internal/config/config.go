@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,10 +15,9 @@ type Config struct {
 }
 
 type Defaults struct {
-	SSHKey       string        `yaml:"ssh_key"`
-	SSHPort      int           `yaml:"ssh_port"`
-	TailLines    int           `yaml:"tail_lines"`
-	PollInterval time.Duration `yaml:"poll_interval"`
+	SSHKey    string `yaml:"ssh_key"`
+	SSHPort   int    `yaml:"ssh_port"`
+	TailLines int    `yaml:"tail_lines"`
 }
 
 type LogFolder struct {
@@ -86,9 +84,6 @@ func applyDefaults(cfg *Config) {
 	}
 	if d.TailLines == 0 {
 		d.TailLines = 100
-	}
-	if d.PollInterval == 0 {
-		d.PollInterval = 5 * time.Second
 	}
 	d.SSHKey = expandTilde(d.SSHKey)
 

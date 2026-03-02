@@ -62,4 +62,4 @@ Global: `q`/Ctrl-C quit, Tab/Shift-Tab cycle panes, `/` fuzzy search, Esc clears
 
 ## Config
 
-YAML config in `config.yaml` (see `config.yaml.example`). Defines `defaults` (ssh_key, ssh_port, tail_lines, poll_interval) and a `servers` list. Server-level settings override defaults. Auth methods: `key`, `agent`, `password` (password not implemented). If no auth method is specified, defaults to `key` if ssh_key is set, otherwise `agent`.
+YAML config in `config.yaml` (see `config.yaml.example`). Defines `defaults` (ssh_key, ssh_port, tail_lines) and a `servers` list. Server-level settings override defaults. Auth methods: `key`, `agent`, `password` (password not implemented). If no auth method is specified, defaults to `key` if ssh_key is set, otherwise `agent`.

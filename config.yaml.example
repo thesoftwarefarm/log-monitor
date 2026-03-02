@@ -7,7 +7,6 @@ defaults:
   ssh_key: "~/.ssh/id_rsa"       # default SSH private key path
   ssh_port: 22                    # default SSH port
   tail_lines: 100                 # number of lines to show initially
-  poll_interval: 5s               # how often to refresh file metadata
 
 servers:
   - name: "Production Web 1"
