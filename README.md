@@ -61,7 +61,10 @@ servers:
     auth:
       method: "key"
       key_path: "~/.ssh/prod_key"
-    log_path: "/var/log/myapp"
+    log_folders:
+      - path: "/var/log/nginx"
+        file_patterns:
+          - "*.log"
     file_patterns:
       - "*.log"
       - "*.log.*"
@@ -72,7 +75,10 @@ servers:
     user: "admin"
     auth:
       method: "agent"
-    log_path: "/var/log/postgresql"
+    log_folders:
+      - path: "/var/log/nginx"
+        file_patterns:
+          - "*.log"
     sudo: true                    # prompts for password at connect time
 
   # Multiple log directories on a single server
@@ -80,14 +86,11 @@ servers:
     host: "10.0.0.60"
     user: "deploy"
     log_folders:
-      - name: "nginx"
-        path: "/var/log/nginx"
+      - path: "/var/log/nginx"
         file_patterns:
           - "*.log"
-      - name: "laravel"
-        path: "/var/log/laravel"
-      - name: "mysql"
-        path: "/var/log/mysql"
+      - path: "/var/log/laravel"
+      - path: "/var/log/mysql"
         file_patterns:
           - "*.log"
           - "*.err"
@@ -114,19 +117,15 @@ servers:
 | `auth.method` | `"key"`, `"agent"`, or `"password"` | No (auto-detects) |
 | `auth.key_path` | Path to SSH private key | No |
 | `sudo` | Use sudo for file operations | No |
-| `log_path` | Single log directory path | * |
-| `file_patterns` | Glob patterns to filter files (with `log_path`) | No |
+| `file_patterns` | Glob patterns to filter files | No |
 | `log_folders` | Multiple log directories (see below) | * |
 
-\* Either `log_path` or `log_folders` is required, but not both.
+\*
 
 #### Log Folders
 
-When a server has multiple log directories, use `log_folders` instead of `log_path`:
-
 | Field | Description | Required |
 |-------|-------------|----------|
-| `name` | Display name for the folder | Yes |
 | `path` | Absolute path on the remote server | Yes |
 | `file_patterns` | Glob patterns to filter files in this folder | No |
 
@@ -195,7 +194,7 @@ The application has a three-pane layout with a status bar:
 
 | Key | Action |
 |-----|--------|
-| `q` / `Ctrl-C` | Quit |
+| `Ctrl-C` | Quit |
 | `Tab` | Focus next pane |
 | `Shift-Tab` | Focus previous pane |
 | `1` / `2` / `3` | Jump to pane by number |
@@ -279,7 +278,7 @@ The debug log captures SSH connections, file operations, UI events, and error de
    - Check if `file_patterns` are too restrictive
    - Ensure the directory contains log files
 
-Create a new release:
+## Create a new release:
 ```
 git tag -a v0.1.0 -m "Release description"
 git push origin v0.1.0
