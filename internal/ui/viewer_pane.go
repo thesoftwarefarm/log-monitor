@@ -32,6 +32,7 @@ type drawWriter struct {
 	pending      bool
 	pendingLines int
 	lineBuf      bytes.Buffer
+	lineNumber   int // next line number to assign
 }
 
 func (dw *drawWriter) Write(p []byte) (int, error) {
@@ -54,28 +55,24 @@ func (dw *drawWriter) Write(p []byte) (int, error) {
 
 	dw.lineBuf.Reset()
 	dw.lineBuf.WriteString(remainder)
+	startLine := dw.lineNumber
 	dw.mu.Unlock()
 
-	// Apply tail filter if active.
 	filter := dw.vp.GetTailFilter()
-	if filter != "" {
-		complete = filterLines(complete, filter)
-		if complete == "" {
-			return origLen, nil
-		}
-	}
-
-	// Escape style tags so tview doesn't misparse them as color tags.
-	escaped := tview.Escape(complete)
-	if filter != "" {
-		escaped = highlightFilter(escaped, filter)
-	}
-	_, err := io.WriteString(dw.tv, escaped)
-
-	newLines := strings.Count(complete, "\n")
+	result, displayedCount, nextLine := processLines(complete, startLine, filter)
 
 	dw.mu.Lock()
-	dw.pendingLines += newLines
+	dw.lineNumber = nextLine
+	dw.mu.Unlock()
+
+	if result == "" {
+		return origLen, nil
+	}
+
+	_, err := io.WriteString(dw.tv, result)
+
+	dw.mu.Lock()
+	dw.pendingLines += displayedCount
 	if !dw.pending {
 		dw.pending = true
 		dw.mu.Unlock()
@@ -93,6 +90,54 @@ func (dw *drawWriter) Write(p []byte) (int, error) {
 	}
 
 	return origLen, err
+}
+
+// processLines processes raw text: assigns original line numbers starting from
+// startLine, optionally filters by query, escapes for tview, colorizes, and
+// prefixes line numbers. Filtered-out lines still consume line numbers so
+// displayed lines reflect their actual file position.
+//
+// Returns the processed text ready for tview, the count of displayed lines,
+// and the next line number (startLine + total input lines).
+func processLines(text string, startLine int, filter string) (result string, displayedCount int, nextLine int) {
+	lines := strings.Split(text, "\n")
+	var buf strings.Builder
+	lineNum := startLine
+	lowerFilter := strings.ToLower(filter)
+	displayed := 0
+
+	for i, line := range lines {
+		if i == len(lines)-1 && line == "" {
+			// Trailing empty string from split on trailing '\n'
+			break
+		}
+
+		origNum := lineNum
+		lineNum++
+
+		// If filter is active and line doesn't match, skip display
+		if filter != "" && !strings.Contains(strings.ToLower(line), lowerFilter) {
+			continue
+		}
+
+		// Escape, highlight, prefix
+		escaped := tview.Escape(line)
+		if filter != "" {
+			escaped = highlightFilter(escaped, filter)
+		}
+
+		if displayed > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(fmt.Sprintf("[gray]%5d |[-] %s", origNum, escaped))
+		displayed++
+	}
+
+	if displayed > 0 {
+		buf.WriteByte('\n')
+	}
+
+	return buf.String(), displayed, lineNum
 }
 
 // ViewerPane displays log file content with live tailing support.
@@ -127,7 +172,7 @@ func NewViewerPane(app *tview.Application) *ViewerPane {
 	vp.textView.SetWordWrap(true)
 	vp.textView.SetMaxLines(maxLines)
 
-	vp.writer = &drawWriter{tv: vp.textView, app: app, vp: vp}
+	vp.writer = &drawWriter{tv: vp.textView, app: app, vp: vp, lineNumber: 1}
 
 	// Build the flex container — just the textView
 	vp.flex = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -174,44 +219,6 @@ func highlightFilter(escaped, query string) string {
 		rest = rest[idx+len(eq):]
 	}
 	return buf.String()
-}
-
-// filterLines filters complete text (with trailing newlines) keeping only lines
-// that contain query (case-insensitive). Returns filtered text with trailing newline,
-// or empty string if no lines match.
-func filterLines(text, query string) string {
-	lines := strings.Split(text, "\n")
-	lowerQuery := strings.ToLower(query)
-	var kept []string
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		if strings.Contains(strings.ToLower(line), lowerQuery) {
-			kept = append(kept, line)
-		}
-	}
-	if len(kept) == 0 {
-		return ""
-	}
-	return strings.Join(kept, "\n") + "\n"
-}
-
-// filterText filters multi-line text keeping only lines containing query (case-insensitive).
-func (vp *ViewerPane) filterText(text string) string {
-	filter := vp.GetTailFilter()
-	if filter == "" {
-		return text
-	}
-	lines := strings.Split(text, "\n")
-	lowerQuery := strings.ToLower(filter)
-	var kept []string
-	for _, line := range lines {
-		if strings.Contains(strings.ToLower(line), lowerQuery) {
-			kept = append(kept, line)
-		}
-	}
-	return strings.Join(kept, "\n")
 }
 
 // SetTitle sets a custom title on the viewer pane.
@@ -311,26 +318,22 @@ func (vp *ViewerPane) StopSpinner() {
 }
 
 // SetText replaces the current content, escaping brackets for tview safety.
-// Applies the active tail filter before display.
-func (vp *ViewerPane) SetText(text string) {
+// Applies the active tail filter before display. startLine is the file line
+// number of the first line in text (e.g. totalLines - tailLines + 1).
+func (vp *ViewerPane) SetText(text string, startLine int) {
 	vp.textView.SetTextAlign(tview.AlignLeft)
 	vp.textView.Clear()
-	filtered := vp.filterText(text)
-	escaped := tview.Escape(filtered)
+
 	filter := vp.GetTailFilter()
-	if filter != "" {
-		escaped = highlightFilter(escaped, filter)
-	}
-	vp.textView.SetText(escaped)
+	result, displayed, nextLine := processLines(text, startLine, filter)
+
+	vp.writer.mu.Lock()
+	vp.writer.lineNumber = nextLine
+	vp.writer.mu.Unlock()
+
+	vp.textView.SetText(result)
 	vp.textView.ScrollToEnd()
-	if filtered == "" {
-		vp.lineCount = 0
-	} else {
-		vp.lineCount = strings.Count(filtered, "\n")
-		if !strings.HasSuffix(filtered, "\n") {
-			vp.lineCount++
-		}
-	}
+	vp.lineCount = displayed
 }
 
 // SetMessage displays a centered message in the viewer (e.g. error state).
@@ -340,6 +343,9 @@ func (vp *ViewerPane) SetMessage(msg string) {
 	vp.textView.Clear()
 	vp.tailFilter = ""
 	vp.lineCount = 0
+	vp.writer.mu.Lock()
+	vp.writer.lineNumber = 1
+	vp.writer.mu.Unlock()
 	vp.textView.SetTextAlign(tview.AlignCenter)
 	vp.textView.SetText("\n\n\n" + msg)
 }
@@ -351,6 +357,9 @@ func (vp *ViewerPane) Clear() {
 	vp.textView.Clear()
 	vp.tailFilter = ""
 	vp.lineCount = 0
+	vp.writer.mu.Lock()
+	vp.writer.lineNumber = 1
+	vp.writer.mu.Unlock()
 }
 
 // Writer returns an io.Writer that appends to the text view with throttled redraws.

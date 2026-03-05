@@ -52,6 +52,20 @@ func ListFiles(client *gossh.Client, dir string, patterns []string, opts Command
 	return files, nil
 }
 
+// CountLines returns the total number of lines in a remote file via `wc -l`.
+func CountLines(client *gossh.Client, path string, opts CommandOpts) (int, error) {
+	cmd := fmt.Sprintf("wc -l < %s", shellescape.Quote(path))
+	output, err := runCommand(client, cmd, opts)
+	if err != nil {
+		return 0, fmt.Errorf("counting lines %s: %w", path, err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(output))
+	if err != nil {
+		return 0, fmt.Errorf("parsing wc output %q: %w", output, err)
+	}
+	return n, nil
+}
+
 // ReadFileContent reads the last N lines of a remote file.
 func ReadFileContent(client *gossh.Client, path string, lines int, opts CommandOpts) (string, error) {
 	cmd := fmt.Sprintf("tail -n %d %s", lines, shellescape.Quote(path))

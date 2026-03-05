@@ -6,14 +6,14 @@ import (
 	"github.com/rivo/tview"
 )
 
-const defaultShortcuts = " [yellow]q[white]: Exit | [yellow]↑↓[white]: Navigate | [yellow]Enter[white]: Select | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Stop tail | [yellow]r[white]: Refresh"
+const defaultShortcuts = " [yellow]Ctrl-C[white]: Exit | [yellow]↑↓[white]: Navigate | [yellow]Enter[white]: Select | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Stop tail | [yellow]r[white]: Refresh"
 
 // Pane-specific shortcut hints.
 const (
-	ShortcutsListPane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]q[white]: Exit"
-	ShortcutsFolderPane = " [yellow]Enter[white]: Select folder/file | [yellow]Tab[white]: Switch pane | [yellow]q[white]: Exit"
-	ShortcutsFilePane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select file | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]q[white]: Exit"
-	ShortcutsViewerPane     = " [yellow]F9[white]: Copy mode | [yellow]F5[white]: Download | [yellow]F7[white]: Filter | [yellow]g/G[white]: Top/Bottom | [yellow]r[white]: Refresh | [yellow]Esc[white]: Stop tail | [yellow]q[white]: Exit"
+	ShortcutsListPane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]Ctrl-C[white]: Exit"
+	ShortcutsFolderPane = " [yellow]Enter[white]: Select folder/file | [yellow]Tab[white]: Switch pane | [yellow]Ctrl-C[white]: Exit"
+	ShortcutsFilePane   = " [yellow]Type[white]: Filter | [yellow]Enter[white]: Select file | [yellow]Tab[white]: Switch pane | [yellow]Esc[white]: Clear filter | [yellow]Ctrl-C[white]: Exit"
+	ShortcutsViewerPane     = " [yellow]F9[white]: Copy mode | [yellow]F5[white]: Download | [yellow]F7[white]: Filter | [yellow]g/G[white]: Top/Bottom | [yellow]r[white]: Refresh | [yellow]Esc[white]: Stop tail | [yellow]Ctrl-C[white]: Exit"
 	ShortcutsViewerCopyMode = " [yellow::r] COPY MODE [-:-:-] Select text with mouse | [yellow]F9[white]/[yellow]Esc[white]: Exit copy mode"
 )
 

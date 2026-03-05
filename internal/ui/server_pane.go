@@ -60,10 +60,6 @@ func NewServerPane(servers []config.ServerConfig) *ServerPane {
 			}
 		case tcell.KeyRune:
 			r := event.Rune()
-			// Don't capture 'q' — that's the global quit key
-			if r == 'q' {
-				return event
-			}
 			sp.filterQuery += string(r)
 			sp.applyFilter()
 			return nil

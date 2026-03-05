@@ -278,3 +278,9 @@ The debug log captures SSH connections, file operations, UI events, and error de
    - Verify `log_path` or `log_folders` paths are correct
    - Check if `file_patterns` are too restrictive
    - Ensure the directory contains log files
+
+Create a new release:
+```
+git tag -a v0.1.0 -m "Release description"
+git push origin v0.1.0
+```

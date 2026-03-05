@@ -239,7 +239,7 @@ func (a *App) autoStart() {
 		}
 	}
 
-	folders := srv.EffectiveFolders()
+	folders := srv.LogFolders
 	logger.Log("app", "autoStart: server has %d folders", len(folders))
 
 	if len(folders) > 1 && a.autoSelect.Folder != "" {
@@ -555,7 +555,7 @@ func (a *App) onServerSelected(idx int, srv config.ServerConfig) {
 	logger.Log("app", "onServerSelected: setTerminalTitle")
 	setTerminalTitle(fmt.Sprintf("Log Monitor — %s", srv.Name))
 
-	folders := srv.EffectiveFolders()
+	folders := srv.LogFolders
 	logger.Log("app", "onServerSelected: %d folders", len(folders))
 
 	if len(folders) > 1 {
@@ -637,7 +637,7 @@ func (a *App) onUpDir() {
 	a.viewerPane.Clear()
 
 	if srv != nil {
-		folders := srv.EffectiveFolders()
+		folders := srv.LogFolders
 		a.filePane.SetFolders(folders)
 		a.setContext(fmt.Sprintf("[green]%s[-] — select a folder", srv.Name))
 	}
@@ -724,7 +724,7 @@ func (a *App) loadFilesForFolder(ctx context.Context, srv config.ServerConfig, f
 	}
 
 	// Determine if this server has multiple folders (show "/ .." row)
-	showUpDir := len(srv.EffectiveFolders()) > 1
+	showUpDir := len(srv.LogFolders) > 1
 
 	logger.Log("app", "loadFilesForFolder: got %d files, queuing UI update", len(files))
 	a.queueUpdate(func() {
@@ -784,8 +784,17 @@ func (a *App) loadAndTailFile(srv config.ServerConfig, file ssh.FileInfo, fullPa
 		opts.SudoPassword = a.pool.GetSudoPassword(srv)
 	}
 
+	// Get total line count to compute accurate starting line number.
+	tailLines := a.config.Defaults.TailLines
+	startLine := 1
+	if totalLines, err := ssh.CountLines(client, fullPath, opts); err == nil {
+		if totalLines > tailLines {
+			startLine = totalLines - tailLines + 1
+		}
+	}
+
 	// Read initial content
-	content, err := ssh.ReadFileContent(client, fullPath, a.config.Defaults.TailLines, opts)
+	content, err := ssh.ReadFileContent(client, fullPath, tailLines, opts)
 	if err != nil {
 		a.queueUpdate(func() {
 			a.statusBar.SetError(fmt.Sprintf("read: %v", err))
@@ -794,7 +803,7 @@ func (a *App) loadAndTailFile(srv config.ServerConfig, file ssh.FileInfo, fullPa
 	}
 
 	a.queueUpdate(func() {
-		a.viewerPane.SetText(content)
+		a.viewerPane.SetText(content, startLine)
 	})
 
 	// Start tailing

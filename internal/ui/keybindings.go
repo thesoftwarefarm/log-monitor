@@ -68,12 +68,6 @@ func SetupKeybindings(app *tview.Application, a *App) {
 				return nil
 			}
 		case tcell.KeyRune:
-			switch event.Rune() {
-			case 'q':
-				logger.Log("keys", "q → app.Stop()")
-				app.Stop()
-				return nil
-			}
 			// Rune shortcuts only when the viewer pane has focus,
 			// so they don't interfere with list widget navigation.
 			if a.FocusedOnViewer() {

@@ -117,10 +117,6 @@ func NewFilePane() *FilePane {
 			}
 		case tcell.KeyRune:
 			r := event.Rune()
-			// Don't capture 'q' — that's the global quit key
-			if r == 'q' {
-				return event
-			}
 			fp.filterQuery += string(r)
 			fp.applyFilter()
 			return nil

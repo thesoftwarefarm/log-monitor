@@ -16,31 +16,32 @@ servers:
     auth:
       method: "key"               # "key", "password", or "agent"
       key_path: "~/.ssh/prod_key"
-    log_path: "/var/log/myapp"
-    file_patterns:                # optional glob filters
-      - "*.log"
-      - "*.log.*"
+    log_folders:
+      - path: "/var/log/myapp"
+        file_patterns:            # glob filters: *.log for current, *.log.* for rotated
+          - "*.log"
+          - "*.log.*"
 
   - name: "Staging DB"
     host: "10.0.0.50"
     user: "admin"
     auth:
       method: "agent"             # use SSH agent for authentication
-    log_path: "/var/log/postgresql"
+    log_folders:
+      - path: "/var/log/postgresql"
     sudo: true                    # use sudo for reading log files (prompts for password)
 
   - name: "Web Server"
     host: "10.0.0.60"
     user: "deploy"
-    log_folders:                  # multiple log directories (mutually exclusive with log_path)
-      - name: "nginx"
-        path: "/var/log/nginx"
+    log_folders:                  # multiple log directories
+      - path: "/var/log/nginx"
         file_patterns:
           - "*.log"
-      - name: "laravel"
-        path: "/var/log/laravel"
-      - name: "mysql"
-        path: "/var/log/mysql"
+          - "*.log.*"
+      - path: "/var/log/laravel"
+      - path: "/var/log/mysql"
         file_patterns:
           - "*.log"
+          - "*.log.*"
           - "*.err"
