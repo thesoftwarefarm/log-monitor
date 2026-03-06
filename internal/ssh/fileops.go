@@ -54,12 +54,19 @@ func ListFiles(client *gossh.Client, dir string, patterns []string, opts Command
 
 // CountLines returns the total number of lines in a remote file via `wc -l`.
 func CountLines(client *gossh.Client, path string, opts CommandOpts) (int, error) {
-	cmd := fmt.Sprintf("wc -l < %s", shellescape.Quote(path))
+	// Use `wc -l file` instead of `wc -l < file` to avoid stdin redirection
+	// conflicting with sudo -S which reads the password from stdin.
+	cmd := fmt.Sprintf("wc -l %s", shellescape.Quote(path))
 	output, err := runCommand(client, cmd, opts)
 	if err != nil {
 		return 0, fmt.Errorf("counting lines %s: %w", path, err)
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(output))
+	// `wc -l file` outputs "  123 /path/to/file", take the first field
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("empty wc output for %s", path)
+	}
+	n, err := strconv.Atoi(fields[0])
 	if err != nil {
 		return 0, fmt.Errorf("parsing wc output %q: %w", output, err)
 	}
@@ -74,6 +81,38 @@ func ReadFileContent(client *gossh.Client, path string, lines int, opts CommandO
 		return "", fmt.Errorf("reading %s: %w", path, err)
 	}
 	return output, nil
+}
+
+// CountAndReadFileContent counts total lines and reads the last N lines in a
+// single command. This avoids a second sudo authentication round when sudo is
+// required, significantly reducing latency.
+func CountAndReadFileContent(client *gossh.Client, path string, lines int, opts CommandOpts) (totalLines int, content string, err error) {
+	script := fmt.Sprintf(
+		`lines=$(wc -l < "$1" 2>/dev/null); echo "LINES:${lines:-0}"; tail -n %d "$1"`,
+		lines)
+	cmd := fmt.Sprintf("sh -c %s _ %s", shellescape.Quote(script), shellescape.Quote(path))
+	output, err := runCommand(client, cmd, opts)
+	if err != nil {
+		return 0, "", fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	// First line is "LINES:  123", rest is file content
+	idx := strings.Index(output, "\n")
+	if idx == -1 {
+		return 0, output, nil
+	}
+
+	header := output[:idx]
+	content = output[idx+1:]
+
+	if strings.HasPrefix(header, "LINES:") {
+		countStr := strings.TrimSpace(strings.TrimPrefix(header, "LINES:"))
+		if n, parseErr := strconv.Atoi(countStr); parseErr == nil {
+			totalLines = n
+		}
+	}
+
+	return totalLines, content, nil
 }
 
 // StatFile returns metadata for a single remote file.

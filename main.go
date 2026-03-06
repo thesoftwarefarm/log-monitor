@@ -34,12 +34,11 @@ func main() {
 
 	logger.Log("main", "config loaded, %d servers", len(cfg.Servers))
 
-	app := ui.NewApp(cfg, ui.AutoSelect{
+	if err := ui.Run(cfg, ui.AutoSelect{
 		Server: *autoServer,
 		Folder: *autoFolder,
 		File:   *autoFile,
-	})
-	if err := app.Run(); err != nil {
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

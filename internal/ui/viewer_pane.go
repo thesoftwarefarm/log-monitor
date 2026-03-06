@@ -1,244 +1,332 @@
 package ui
 
 import (
-	"bytes"
-	"context"
 	"fmt"
-	"io"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/rivo/tview"
+	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const defaultViewerTitle = " Log Viewer "
-const maxLines = 10000
+const maxViewerLines = 10000
 
 var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
 
-// drawWriter wraps a tview.TextView as an io.Writer and throttles redraws.
-// At most one QueueUpdateDraw is queued at a time. ScrollToEnd runs safely
-// inside the queued callback on the main goroutine.
-//
-// Incoming bytes are buffered so that only complete lines (terminated by '\n')
-// are colorized and forwarded to the text view. Any trailing partial line is
-// kept in lineBuf until more data arrives.
-type drawWriter struct {
-	tv           *tview.TextView
-	app          *tview.Application
-	vp           *ViewerPane
-	mu           sync.Mutex
-	pending      bool
-	pendingLines int
-	lineBuf      bytes.Buffer
-	lineNumber   int // next line number to assign
-}
+// ViewerPaneModel holds the state for the log viewer pane.
+type ViewerPaneModel struct {
+	viewport viewport.Model
+	lines    []string // raw colorized lines
+	width    int
+	height   int
+	title    string
 
-func (dw *drawWriter) Write(p []byte) (int, error) {
-	origLen := len(p)
+	// Line numbering
+	startLineNum int // the file line number of the first line in lines
+	nextLineNum  int // next line number to assign from tail data
 
-	dw.mu.Lock()
-	dw.lineBuf.Write(p)
-	data := dw.lineBuf.String()
+	// Tail filter
+	tailFilter string
 
-	// Find last newline — everything up to it can be colorized.
-	lastNL := strings.LastIndex(data, "\n")
-	if lastNL == -1 {
-		// No complete line yet; keep buffering.
-		dw.mu.Unlock()
-		return origLen, nil
-	}
-
-	complete := data[:lastNL+1] // includes the trailing '\n'
-	remainder := data[lastNL+1:]
-
-	dw.lineBuf.Reset()
-	dw.lineBuf.WriteString(remainder)
-	startLine := dw.lineNumber
-	dw.mu.Unlock()
-
-	filter := dw.vp.GetTailFilter()
-	result, displayedCount, nextLine := processLines(complete, startLine, filter)
-
-	dw.mu.Lock()
-	dw.lineNumber = nextLine
-	dw.mu.Unlock()
-
-	if result == "" {
-		return origLen, nil
-	}
-
-	_, err := io.WriteString(dw.tv, result)
-
-	dw.mu.Lock()
-	dw.pendingLines += displayedCount
-	if !dw.pending {
-		dw.pending = true
-		dw.mu.Unlock()
-		go dw.app.QueueUpdateDraw(func() {
-			dw.tv.ScrollToEnd()
-			dw.mu.Lock()
-			lines := dw.pendingLines
-			dw.pendingLines = 0
-			dw.pending = false
-			dw.mu.Unlock()
-			dw.vp.addLines(lines)
-		})
-	} else {
-		dw.mu.Unlock()
-	}
-
-	return origLen, err
-}
-
-// processLines processes raw text: assigns original line numbers starting from
-// startLine, optionally filters by query, escapes for tview, colorizes, and
-// prefixes line numbers. Filtered-out lines still consume line numbers so
-// displayed lines reflect their actual file position.
-//
-// Returns the processed text ready for tview, the count of displayed lines,
-// and the next line number (startLine + total input lines).
-func processLines(text string, startLine int, filter string) (result string, displayedCount int, nextLine int) {
-	lines := strings.Split(text, "\n")
-	var buf strings.Builder
-	lineNum := startLine
-	lowerFilter := strings.ToLower(filter)
-	displayed := 0
-
-	for i, line := range lines {
-		if i == len(lines)-1 && line == "" {
-			// Trailing empty string from split on trailing '\n'
-			break
-		}
-
-		origNum := lineNum
-		lineNum++
-
-		// If filter is active and line doesn't match, skip display
-		if filter != "" && !strings.Contains(strings.ToLower(line), lowerFilter) {
-			continue
-		}
-
-		// Escape, highlight, prefix
-		escaped := tview.Escape(line)
-		if filter != "" {
-			escaped = highlightFilter(escaped, filter)
-		}
-
-		if displayed > 0 {
-			buf.WriteByte('\n')
-		}
-		buf.WriteString(fmt.Sprintf("[gray]%5d |[-] %s", origNum, escaped))
-		displayed++
-	}
-
-	if displayed > 0 {
-		buf.WriteByte('\n')
-	}
-
-	return buf.String(), displayed, lineNum
-}
-
-// ViewerPane displays log file content with live tailing support.
-type ViewerPane struct {
-	textView *tview.TextView
-	app      *tview.Application
-	writer   *drawWriter
-	flex     *tview.Flex
-
-	// Spinner state
-	spinMu     sync.Mutex
-	spinCancel context.CancelFunc
-	spinBase   string
-
-	// Tail filter state
-	tailFilterMu sync.Mutex
-	tailFilter   string
+	// Spinner
+	spinning     bool
+	spinnerFrame int
+	spinBase     string
 
 	// Line count
 	lineCount int
 }
 
-func NewViewerPane(app *tview.Application) *ViewerPane {
-	vp := &ViewerPane{
-		textView: tview.NewTextView(),
-		app:      app,
+// NewViewerPaneModel creates a new viewer pane model.
+func NewViewerPaneModel() ViewerPaneModel {
+	vp := ViewerPaneModel{
+		title:        defaultViewerTitle,
+		startLineNum: 1,
+		nextLineNum:  1,
 	}
-
-	vp.textView.SetTitle(defaultViewerTitle).SetBorder(true)
-	vp.textView.SetDynamicColors(true)
-	vp.textView.SetScrollable(true)
-	vp.textView.SetWordWrap(true)
-	vp.textView.SetMaxLines(maxLines)
-
-	vp.writer = &drawWriter{tv: vp.textView, app: app, vp: vp, lineNumber: 1}
-
-	// Build the flex container — just the textView
-	vp.flex = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(vp.textView, 0, 1, true)
-
+	vp.viewport = viewport.New(0, 0)
+	vp.viewport.SetContent("")
 	return vp
 }
 
-// SetTailFilter sets the active tail filter term. Thread-safe.
-func (vp *ViewerPane) SetTailFilter(query string) {
-	vp.tailFilterMu.Lock()
-	vp.tailFilter = query
-	vp.tailFilterMu.Unlock()
-}
-
-// GetTailFilter returns the current tail filter term. Thread-safe.
-func (vp *ViewerPane) GetTailFilter() string {
-	vp.tailFilterMu.Lock()
-	defer vp.tailFilterMu.Unlock()
-	return vp.tailFilter
-}
-
-// highlightFilter wraps every occurrence of query in escaped text with
-// yellow-background highlight tags. Case-insensitive; preserves original case.
-// The query is escaped so it matches against already-escaped text.
-func highlightFilter(escaped, query string) string {
-	eq := tview.Escape(query)
-	if eq == "" {
-		return escaped
+// SetSize updates dimensions and the internal viewport.
+func (vp *ViewerPaneModel) SetSize(w, h int) {
+	vp.width = w
+	vp.height = h
+	// Account for border (2) + title line is part of border
+	innerW := w - 2
+	innerH := h - 2
+	if innerW < 1 {
+		innerW = 1
 	}
-	lowerEq := strings.ToLower(eq)
-	var buf strings.Builder
-	rest := escaped
-	for {
-		idx := strings.Index(strings.ToLower(rest), lowerEq)
-		if idx == -1 {
-			buf.WriteString(rest)
+	if innerH < 1 {
+		innerH = 1
+	}
+	vp.viewport.Width = innerW
+	vp.viewport.Height = innerH
+	vp.rebuildContent()
+}
+
+// SetText replaces all content with initial file content.
+func (vp *ViewerPaneModel) SetText(text string, startLine int) {
+	vp.lines = nil
+	vp.startLineNum = startLine
+	vp.nextLineNum = startLine
+	vp.lineCount = 0
+
+	if text == "" {
+		vp.rebuildContent()
+		return
+	}
+
+	rawLines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for _, line := range rawLines {
+		line = sanitizeLine(line)
+		origNum := vp.nextLineNum
+		vp.nextLineNum++
+
+		// Apply filter
+		if vp.tailFilter != "" && !strings.Contains(strings.ToLower(line), strings.ToLower(vp.tailFilter)) {
+			continue
+		}
+
+		colorized := ColorizeLine(line)
+		if vp.tailFilter != "" {
+			colorized = highlightFilterANSI(colorized, vp.tailFilter)
+		}
+		numbered := fmt.Sprintf("\033[90m%5d |\033[0m %s", origNum, colorized)
+		vp.lines = append(vp.lines, numbered)
+		vp.lineCount++
+	}
+
+	vp.rebuildContent()
+	vp.viewport.GotoBottom()
+}
+
+// AppendTailData processes incoming tail data and appends lines.
+func (vp *ViewerPaneModel) AppendTailData(data []byte) {
+	text := string(data)
+	rawLines := strings.Split(text, "\n")
+
+	for i, line := range rawLines {
+		// Skip trailing empty from split
+		if i == len(rawLines)-1 && line == "" {
 			break
 		}
-		buf.WriteString(rest[:idx])
-		buf.WriteString("[black:yellow]")
-		buf.WriteString(rest[idx : idx+len(eq)])
-		buf.WriteString("[white:-]")
-		rest = rest[idx+len(eq):]
+
+		line = sanitizeLine(line)
+		origNum := vp.nextLineNum
+		vp.nextLineNum++
+
+		// Apply filter
+		if vp.tailFilter != "" && !strings.Contains(strings.ToLower(line), strings.ToLower(vp.tailFilter)) {
+			continue
+		}
+
+		colorized := ColorizeLine(line)
+		if vp.tailFilter != "" {
+			colorized = highlightFilterANSI(colorized, vp.tailFilter)
+		}
+		numbered := fmt.Sprintf("\033[90m%5d |\033[0m %s", origNum, colorized)
+		vp.lines = append(vp.lines, numbered)
+		vp.lineCount++
 	}
-	return buf.String()
+
+	// Cap at max lines
+	if len(vp.lines) > maxViewerLines {
+		excess := len(vp.lines) - maxViewerLines
+		vp.lines = vp.lines[excess:]
+	}
+
+	wasAtBottom := vp.viewport.AtBottom()
+	vp.rebuildContent()
+	if wasAtBottom {
+		vp.viewport.GotoBottom()
+	}
 }
 
-// SetTitle sets a custom title on the viewer pane.
-func (vp *ViewerPane) SetTitle(title string) {
-	vp.textView.SetTitle(title)
+// Clear resets the viewer.
+func (vp *ViewerPaneModel) Clear() {
+	vp.lines = nil
+	vp.title = defaultViewerTitle
+	vp.tailFilter = ""
+	vp.lineCount = 0
+	vp.startLineNum = 1
+	vp.nextLineNum = 1
+	vp.spinning = false
+	vp.rebuildContent()
+}
+
+// SetMessage displays a message (plain, top-aligned).
+func (vp *ViewerPaneModel) SetMessage(msg string) {
+	vp.lines = nil
+	vp.title = defaultViewerTitle
+	vp.tailFilter = ""
+	vp.lineCount = 0
+	vp.spinning = false
+	vp.startLineNum = 1
+	vp.nextLineNum = 1
+	vp.viewport.SetContent(msg)
+}
+
+// SetCenteredMessage displays a pre-rendered block centered in the viewport.
+func (vp *ViewerPaneModel) SetCenteredMessage(block string) {
+	vp.lines = nil
+	vp.title = defaultViewerTitle
+	vp.tailFilter = ""
+	vp.lineCount = 0
+	vp.spinning = false
+	vp.startLineNum = 1
+	vp.nextLineNum = 1
+
+	centered := lipgloss.Place(vp.viewport.Width, vp.viewport.Height,
+		lipgloss.Center, lipgloss.Center, block)
+	vp.viewport.SetContent(centered)
+}
+
+// SetTitle sets a custom title.
+func (vp *ViewerPaneModel) SetTitle(title string) {
+	vp.title = title
 }
 
 // ResetTitle restores the default title.
-func (vp *ViewerPane) ResetTitle() {
-	vp.textView.SetTitle(defaultViewerTitle)
+func (vp *ViewerPaneModel) ResetTitle() {
+	vp.title = defaultViewerTitle
 	vp.lineCount = 0
 }
 
-// addLines increments the line count by n, capping at maxLines.
-// Must be called on the main goroutine (inside QueueUpdateDraw).
-func (vp *ViewerPane) addLines(n int) {
-	vp.lineCount += n
-	if vp.lineCount > maxLines {
-		vp.lineCount = maxLines
+// SetTailFilter sets the active tail filter.
+func (vp *ViewerPaneModel) SetTailFilter(query string) {
+	vp.tailFilter = query
+}
+
+// GetTailFilter returns the current tail filter.
+func (vp *ViewerPaneModel) GetTailFilter() string {
+	return vp.tailFilter
+}
+
+// StartSpinner starts the spinner animation.
+func (vp *ViewerPaneModel) StartSpinner(base string) {
+	vp.spinning = true
+	vp.spinnerFrame = 0
+	vp.spinBase = base
+}
+
+// StopSpinner stops the spinner.
+func (vp *ViewerPaneModel) StopSpinner() {
+	vp.spinning = false
+}
+
+// TickSpinner advances the spinner frame and returns the updated title.
+func (vp *ViewerPaneModel) TickSpinner() {
+	if !vp.spinning {
+		return
 	}
+	vp.spinnerFrame++
+	title := vp.spinBase
+	if vp.tailFilter != "" {
+		title = fmt.Sprintf("%s [filter: %s]", title, vp.tailFilter)
+	}
+	if vp.lineCount > 0 {
+		title = fmt.Sprintf("%s (%s lines)", title, formatLineCount(vp.lineCount))
+	}
+	vp.title = fmt.Sprintf(" %c %s ", spinnerFrames[vp.spinnerFrame%len(spinnerFrames)], title)
+}
+
+// IsSpinning returns whether the spinner is active.
+func (vp *ViewerPaneModel) IsSpinning() bool {
+	return vp.spinning
+}
+
+// GotoTop scrolls to the top.
+func (vp *ViewerPaneModel) GotoTop() {
+	vp.viewport.GotoTop()
+}
+
+// GotoBottom scrolls to the bottom.
+func (vp *ViewerPaneModel) GotoBottom() {
+	vp.viewport.GotoBottom()
+}
+
+// ScrollUp scrolls up by one line.
+func (vp *ViewerPaneModel) ScrollUp(n int) {
+	vp.viewport.LineUp(n)
+}
+
+// ScrollDown scrolls down by one line.
+func (vp *ViewerPaneModel) ScrollDown(n int) {
+	vp.viewport.LineDown(n)
+}
+
+func (vp *ViewerPaneModel) rebuildContent() {
+	content := strings.Join(vp.lines, "\n")
+	vp.viewport.SetContent(content)
+}
+
+// View renders the viewer pane.
+func (vp *ViewerPaneModel) View(focused bool) string {
+	var paneStyle, titleStyle lipgloss.Style
+	if focused {
+		paneStyle = focusedPaneStyle
+		titleStyle = focusedTitleStyle
+	} else {
+		paneStyle = unfocusedPaneStyle
+		titleStyle = unfocusedTitleStyle
+	}
+
+	paneStyle = paneStyle.Width(vp.width - 2).Height(vp.height - 2)
+
+	content := paneStyle.Render(vp.viewport.View())
+	title := titleStyle.Render(vp.title)
+	return placeTitleInBorder(content, title)
+}
+
+// sanitizeLine strips control characters (except tab) from a line to prevent
+// binary data from corrupting the terminal display.
+func sanitizeLine(s string) string {
+	clean := true
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b < 0x20 && b != '\t' || b == 0x7F {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	buf := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b >= 0x20 && b != 0x7F || b == '\t' {
+			buf = append(buf, b)
+		}
+	}
+	return string(buf)
+}
+
+// highlightFilterANSI wraps occurrences of query with ANSI highlight (yellow background).
+func highlightFilterANSI(text, query string) string {
+	if query == "" {
+		return text
+	}
+	lowerQuery := strings.ToLower(query)
+	lowerText := strings.ToLower(text)
+	var b strings.Builder
+	pos := 0
+	for {
+		idx := strings.Index(lowerText[pos:], lowerQuery)
+		if idx == -1 {
+			b.WriteString(text[pos:])
+			break
+		}
+		b.WriteString(text[pos : pos+idx])
+		b.WriteString("\033[30;43m") // black on yellow
+		b.WriteString(text[pos+idx : pos+idx+len(query)])
+		b.WriteString("\033[0m")
+		pos += idx + len(query)
+	}
+	return b.String()
 }
 
 // formatLineCount returns the line count formatted with commas.
@@ -255,124 +343,4 @@ func formatLineCount(n int) string {
 		result = append(result, byte(c))
 	}
 	return string(result)
-}
-
-// StartSpinner starts a spinning animation in the viewer title. The baseTitle
-// is shown alongside the spinner character (e.g. "Tailing: file.log").
-// Safe to call from any goroutine.
-func (vp *ViewerPane) StartSpinner(baseTitle string) {
-	vp.spinMu.Lock()
-	defer vp.spinMu.Unlock()
-
-	// Stop any existing spinner
-	if vp.spinCancel != nil {
-		vp.spinCancel()
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	vp.spinCancel = cancel
-	vp.spinBase = baseTitle
-
-	go func() {
-		ticker := time.NewTicker(80 * time.Millisecond)
-		defer ticker.Stop()
-		frame := 0
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				f := frame
-				go vp.app.QueueUpdateDraw(func() {
-					vp.spinMu.Lock()
-					// If spinner was stopped, don't overwrite title
-					if vp.spinCancel == nil {
-						vp.spinMu.Unlock()
-						return
-					}
-					vp.spinMu.Unlock()
-					title := baseTitle
-					filter := vp.GetTailFilter()
-					if filter != "" {
-						title = fmt.Sprintf("%s [filter: %s]", baseTitle, filter)
-					}
-					if vp.lineCount > 0 {
-						title = fmt.Sprintf("%s (%s lines)", title, formatLineCount(vp.lineCount))
-					}
-					vp.textView.SetTitle(fmt.Sprintf(" %c %s ", spinnerFrames[f%len(spinnerFrames)], title))
-				})
-				frame++
-			}
-		}
-	}()
-}
-
-// StopSpinner stops the spinning animation. Safe to call from any goroutine.
-func (vp *ViewerPane) StopSpinner() {
-	vp.spinMu.Lock()
-	defer vp.spinMu.Unlock()
-	if vp.spinCancel != nil {
-		vp.spinCancel()
-		vp.spinCancel = nil
-	}
-}
-
-// SetText replaces the current content, escaping brackets for tview safety.
-// Applies the active tail filter before display. startLine is the file line
-// number of the first line in text (e.g. totalLines - tailLines + 1).
-func (vp *ViewerPane) SetText(text string, startLine int) {
-	vp.textView.SetTextAlign(tview.AlignLeft)
-	vp.textView.Clear()
-
-	filter := vp.GetTailFilter()
-	result, displayed, nextLine := processLines(text, startLine, filter)
-
-	vp.writer.mu.Lock()
-	vp.writer.lineNumber = nextLine
-	vp.writer.mu.Unlock()
-
-	vp.textView.SetText(result)
-	vp.textView.ScrollToEnd()
-	vp.lineCount = displayed
-}
-
-// SetMessage displays a centered message in the viewer (e.g. error state).
-func (vp *ViewerPane) SetMessage(msg string) {
-	vp.StopSpinner()
-	vp.ResetTitle()
-	vp.textView.Clear()
-	vp.tailFilter = ""
-	vp.lineCount = 0
-	vp.writer.mu.Lock()
-	vp.writer.lineNumber = 1
-	vp.writer.mu.Unlock()
-	vp.textView.SetTextAlign(tview.AlignCenter)
-	vp.textView.SetText("\n\n\n" + msg)
-}
-
-// Clear removes all content, stops spinner, resets the title, and clears the filter.
-func (vp *ViewerPane) Clear() {
-	vp.StopSpinner()
-	vp.ResetTitle()
-	vp.textView.Clear()
-	vp.tailFilter = ""
-	vp.lineCount = 0
-	vp.writer.mu.Lock()
-	vp.writer.lineNumber = 1
-	vp.writer.mu.Unlock()
-}
-
-// Writer returns an io.Writer that appends to the text view with throttled redraws.
-func (vp *ViewerPane) Writer() io.Writer {
-	return vp.writer
-}
-
-// Widget returns the flex container.
-func (vp *ViewerPane) Widget() tview.Primitive {
-	return vp.flex
-}
-
-// TextView returns the underlying tview.TextView for focus management.
-func (vp *ViewerPane) TextView() *tview.TextView {
-	return vp.textView
 }

@@ -6,7 +6,11 @@
       "WebSearch",
       "WebFetch(domain:github.com)",
       "Bash(go doc:*)",
-      "Bash(go list:*)"
+      "Bash(go list:*)",
+      "Bash(go get:*)",
+      "Bash(go mod:*)",
+      "Bash(go vet:*)",
+      "WebFetch(domain:www.xfree86.org)"
     ]
   }
 }

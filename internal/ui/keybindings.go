@@ -1,89 +1,87 @@
 package ui
 
-import (
-	"fmt"
+import "github.com/charmbracelet/bubbles/key"
 
-	"log-monitor/internal/logger"
-
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
-)
-
-// SetupKeybindings configures global keyboard shortcuts for the application.
-func SetupKeybindings(app *tview.Application, a *App) {
-	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		// Log every keystroke so we can tell if the event loop is alive.
-		if event.Key() == tcell.KeyRune {
-			logger.Log("keys", "rune=%c focus=%d", event.Rune(), a.focusIndex)
-		} else {
-			logger.Log("keys", "key=%s focus=%d", fmt.Sprintf("%v", event.Key()), a.focusIndex)
-		}
-
-		// Ctrl-C always quits, even with a modal open.
-		if event.Key() == tcell.KeyCtrlC {
-			logger.Log("keys", "Ctrl-C → app.Stop()")
-			app.Stop()
-			return nil
-		}
-
-		// Let the modal handle its own input when open.
-		if a.HasModalOpen() {
-			return event
-		}
-
-		switch event.Key() {
-		case tcell.KeyTab:
-			a.CycleFocus(1)
-			return nil
-		case tcell.KeyBacktab:
-			a.CycleFocus(-1)
-			return nil
-		case tcell.KeyEscape:
-			if a.copyMode {
-				a.ToggleCopyMode()
-				return nil
-			}
-			if a.ClearFocusedFilter() {
-				return nil
-			}
-			a.StopTail()
-			return nil
-		case tcell.KeyF5:
-			a.ShowDownloadDialog()
-			return nil
-		case tcell.KeyF9:
-			a.ToggleCopyMode()
-			return nil
-		case tcell.KeyF7:
-			a.ShowFilterPrompt()
-			return nil
-		case tcell.KeyHome:
-			if a.FocusedOnViewer() {
-				a.viewerPane.TextView().ScrollToBeginning()
-				return nil
-			}
-		case tcell.KeyEnd:
-			if a.FocusedOnViewer() {
-				a.viewerPane.TextView().ScrollToEnd()
-				return nil
-			}
-		case tcell.KeyRune:
-			// Rune shortcuts only when the viewer pane has focus,
-			// so they don't interfere with list widget navigation.
-			if a.FocusedOnViewer() {
-				switch event.Rune() {
-				case 'r':
-					a.RefreshFiles()
-					return nil
-				case 'g':
-					a.viewerPane.TextView().ScrollToBeginning()
-					return nil
-				case 'G':
-					a.viewerPane.TextView().ScrollToEnd()
-					return nil
-				}
-			}
-		}
-		return event
-	})
+type keyMap struct {
+	Quit       key.Binding
+	Tab        key.Binding
+	ShiftTab   key.Binding
+	Escape     key.Binding
+	Enter      key.Binding
+	Up         key.Binding
+	Down       key.Binding
+	Home       key.Binding
+	End        key.Binding
+	Download   key.Binding
+	TailFilter key.Binding
+	Refresh    key.Binding
+	GotoTop    key.Binding
+	GotoBottom key.Binding
 }
+
+var keys = keyMap{
+	Quit: key.NewBinding(
+		key.WithKeys("ctrl+c"),
+		key.WithHelp("Ctrl-C", "Exit"),
+	),
+	Tab: key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("Tab", "Next pane"),
+	),
+	ShiftTab: key.NewBinding(
+		key.WithKeys("shift+tab"),
+		key.WithHelp("Shift-Tab", "Prev pane"),
+	),
+	Escape: key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("Esc", "Stop tail/Clear filter"),
+	),
+	Enter: key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("Enter", "Select"),
+	),
+	Up: key.NewBinding(
+		key.WithKeys("up"),
+		key.WithHelp("Up", "Navigate up"),
+	),
+	Down: key.NewBinding(
+		key.WithKeys("down"),
+		key.WithHelp("Down", "Navigate down"),
+	),
+	Home: key.NewBinding(
+		key.WithKeys("home"),
+		key.WithHelp("Home", "Scroll to top"),
+	),
+	End: key.NewBinding(
+		key.WithKeys("end"),
+		key.WithHelp("End", "Scroll to bottom"),
+	),
+	Download: key.NewBinding(
+		key.WithKeys("f5"),
+		key.WithHelp("F5", "Download"),
+	),
+	TailFilter: key.NewBinding(
+		key.WithKeys("f7"),
+		key.WithHelp("F7", "Tail filter"),
+	),
+	Refresh: key.NewBinding(
+		key.WithKeys("r"),
+		key.WithHelp("r", "Refresh"),
+	),
+	GotoTop: key.NewBinding(
+		key.WithKeys("g"),
+		key.WithHelp("g", "Top"),
+	),
+	GotoBottom: key.NewBinding(
+		key.WithKeys("G"),
+		key.WithHelp("G", "Bottom"),
+	),
+}
+
+// Pane-specific shortcut hint strings.
+const (
+	shortcutsListPane   = "Type: Filter | Enter: Select | Tab: Switch pane | Esc: Clear filter | Ctrl-C: Exit"
+	shortcutsFolderPane = "Enter: Select folder | Tab: Switch pane | Ctrl-C: Exit"
+	shortcutsFilePane   = "Type: Filter | Enter: Select file | Tab: Switch pane | Esc: Clear filter | Ctrl-C: Exit"
+	shortcutsViewerPane = "F5: Download | F7: Filter | g/G: Top/Bottom | r: Refresh | Shift+Click: Select text | Esc: Stop tail | Ctrl-C: Exit"
+)
