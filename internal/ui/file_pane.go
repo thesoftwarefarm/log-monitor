@@ -2,184 +2,55 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"log-monitor/internal/config"
 	"log-monitor/internal/ssh"
 
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
+	"github.com/charmbracelet/lipgloss"
 )
 
-// filePaneMode distinguishes between folder-list and file-list views.
 type filePaneMode int
 
 const (
 	modeFiles   filePaneMode = iota
-	modeFolders filePaneMode = iota
+	modeFolders
 )
 
-// FilePane displays the list of log files on a selected server.
-type FilePane struct {
-	table           *tview.Table
-	files           []ssh.FileInfo
-	dir             string
-	folderPath      string // folder path shown in title when inside a folder
-	onSelect        func(idx int, file ssh.FileInfo)
-	selectedFileIdx int // index into files[], -1 means no selection
+// FilePaneModel holds the state for the file list pane.
+type FilePaneModel struct {
+	mode    filePaneMode
+	files   []ssh.FileInfo
+	folders []config.LogFolder
+	dir     string
+	cursor  int
+	width   int
+	height  int
 
-	// Fuzzy filter state
+	selectedFileIdx   int // original index into files[], -1 = none
+	selectedFolderIdx int // last selected folder index
+	hasUpDir          bool
+	folderPath        string
+	message           string // error/status message to display
+
+	// Fuzzy filter
 	filterQuery    string
-	filteredIdxMap []int // maps displayed table row (after header) → index into files[]
-
-	onFilterChange func(query string)
-
-	// Folder mode state
-	mode              filePaneMode
-	folders           []config.LogFolder
-	selectedFolderIdx int // last selected folder index, -1 means none
-	hasUpDir          bool // true when a "/ .." row is present in file mode
-	onFolderSelect    func(idx int, folder config.LogFolder)
-	onUpDir           func()
+	filteredIdxMap []int // maps display index -> original file index
 }
 
-func NewFilePane() *FilePane {
-	fp := &FilePane{
-		table:             tview.NewTable(),
+// NewFilePaneModel creates a new file pane model.
+func NewFilePaneModel() FilePaneModel {
+	return FilePaneModel{
 		selectedFileIdx:   -1,
 		selectedFolderIdx: -1,
 	}
-
-	fp.table.SetTitle(" Files ").SetBorder(true)
-	fp.table.SetSelectable(true, false)
-	fp.table.SetFixed(1, 0)
-	fp.table.SetSeparator('│')
-	fp.table.SetSelectedStyle(tcell.StyleDefault.
-		Background(tcell.ColorDarkCyan).
-		Foreground(tcell.ColorWhite))
-
-	// Show the column header initially
-	fp.showHeader()
-
-	// Selection via Enter key
-	fp.table.SetSelectedFunc(func(row, col int) {
-		displayIdx := row - 1 // row 0 is the fixed header
-
-		if fp.mode == modeFolders {
-			if fp.onFolderSelect != nil && displayIdx >= 0 && displayIdx < len(fp.folders) {
-				fp.selectedFolderIdx = displayIdx
-				fp.onFolderSelect(displayIdx, fp.folders[displayIdx])
-			}
-			return
-		}
-
-		// File mode
-		if fp.hasUpDir {
-			if displayIdx == 0 {
-				// "/ .." row selected
-				if fp.onUpDir != nil {
-					fp.onUpDir()
-				}
-				return
-			}
-			// Adjust for the "/ .." row occupying display position 0
-			displayIdx--
-		}
-		if fp.onSelect != nil && displayIdx >= 0 && displayIdx < len(fp.filteredIdxMap) {
-			origIdx := fp.filteredIdxMap[displayIdx]
-			fp.onSelect(origIdx, fp.files[origIdx])
-		}
-	})
-
-	// Input capture for fuzzy filtering (only in file mode)
-	fp.table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		// When the pane is empty (no files/folders loaded), swallow
-		// navigation keys so tview doesn't loop looking for a selectable row.
-		if fp.files == nil && fp.folders == nil {
-			switch event.Key() {
-			case tcell.KeyUp, tcell.KeyDown, tcell.KeyEnter:
-				return nil
-			}
-			return event
-		}
-
-		if fp.mode == modeFolders {
-			return event // no type-to-filter in folder mode
-		}
-
-		switch event.Key() {
-		case tcell.KeyBackspace, tcell.KeyBackspace2:
-			if len(fp.filterQuery) > 0 {
-				_, size := utf8.DecodeLastRuneInString(fp.filterQuery)
-				fp.filterQuery = fp.filterQuery[:len(fp.filterQuery)-size]
-				fp.applyFilter()
-				return nil
-			}
-		case tcell.KeyRune:
-			r := event.Rune()
-			fp.filterQuery += string(r)
-			fp.applyFilter()
-			return nil
-		}
-		return event
-	})
-
-	return fp
 }
 
-// showHeader renders the column header in row 0.
-func (fp *FilePane) showHeader() {
-	fp.table.SetCell(0, 0,
-		tview.NewTableCell("Name").
-			SetSelectable(false).
-			SetTextColor(tcell.ColorYellow).
-			SetExpansion(1))
-	fp.table.SetCell(0, 1,
-		tview.NewTableCell("Size").
-			SetSelectable(false).
-			SetTextColor(tcell.ColorYellow).
-			SetAlign(tview.AlignRight).
-			SetExpansion(0).
-			SetMaxWidth(8))
-	fp.table.SetCell(0, 2,
-		tview.NewTableCell("Modify time").
-			SetSelectable(false).
-			SetTextColor(tcell.ColorYellow).
-			SetAlign(tview.AlignLeft).
-			SetExpansion(0).
-			SetMaxWidth(12))
-}
-
-// updateTitle sets the pane title, incorporating filter info if applicable.
-func (fp *FilePane) updateTitle() {
+func (fp *FilePaneModel) rebuildFilter() {
 	if fp.mode == modeFolders {
-		fp.table.SetTitle(" Folders ")
 		return
 	}
-	base := " Files "
-	if fp.folderPath != "" {
-		base = " " + fp.folderPath + " "
-	}
-	if fp.filterQuery != "" {
-		// Strip trailing space from base, append filter, re-add space
-		fp.table.SetTitle(fmt.Sprintf("%s[%s] ", base, fp.filterQuery))
-	} else {
-		fp.table.SetTitle(base)
-	}
-}
-
-// rebuildTable populates the table from filteredIdxMap.
-func (fp *FilePane) rebuildTable() {
-	fp.table.Clear()
-	fp.showHeader()
-	fp.updateTitle()
-
-	if fp.mode == modeFolders {
-		fp.rebuildFolderTable()
-		return
-	}
-
-	// Build index map
 	if fp.filterQuery == "" {
 		fp.filteredIdxMap = make([]int, len(fp.files))
 		for i := range fp.files {
@@ -193,175 +64,81 @@ func (fp *FilePane) rebuildTable() {
 			}
 		}
 	}
-
-	// Determine starting data row (after header)
-	nextRow := 1
-
-	// Insert "/ .." row if needed
-	if fp.hasUpDir {
-		fp.table.SetCell(nextRow, 0,
-			tview.NewTableCell("/ ..").
-				SetExpansion(1).
-				SetAlign(tview.AlignLeft).
-				SetTextColor(tcell.ColorAqua))
-		fp.table.SetCell(nextRow, 1,
-			tview.NewTableCell("UP--DIR").
-				SetAlign(tview.AlignRight).
-				SetExpansion(0).
-				SetMaxWidth(8).
-				SetTextColor(tcell.ColorAqua))
-		fp.table.SetCell(nextRow, 2,
-			tview.NewTableCell("").
-				SetAlign(tview.AlignLeft).
-				SetExpansion(0).
-				SetMaxWidth(12))
-		nextRow++
+	// Clamp cursor
+	total := fp.totalRows()
+	if fp.cursor >= total {
+		fp.cursor = max(0, total-1)
 	}
+}
 
-	if len(fp.filteredIdxMap) == 0 && len(fp.files) > 0 {
-		fp.table.SetSelectable(fp.hasUpDir, false)
-		fp.table.SetCell(nextRow, 0,
-			tview.NewTableCell("(no matches)").
-				SetSelectable(false).
-				SetTextColor(tcell.ColorGray).
-				SetExpansion(1))
+// totalRows returns the number of selectable rows.
+func (fp *FilePaneModel) totalRows() int {
+	if fp.mode == modeFolders {
+		return len(fp.folders)
+	}
+	n := len(fp.filteredIdxMap)
+	if fp.hasUpDir {
+		n++
+	}
+	return n
+}
+
+// HandleRune adds a filter character (files mode only).
+func (fp *FilePaneModel) HandleRune(r rune) {
+	if fp.mode == modeFolders {
 		return
 	}
+	fp.filterQuery += string(r)
+	fp.rebuildFilter()
+}
 
-	if len(fp.files) == 0 {
-		fp.table.SetSelectable(fp.hasUpDir, false)
-		fp.table.SetCell(nextRow, 0,
-			tview.NewTableCell("(no files found)").
-				SetSelectable(false).
-				SetTextColor(tcell.ColorGray).
-				SetExpansion(1))
-		return
+// HandleBackspace removes the last filter character.
+func (fp *FilePaneModel) HandleBackspace() bool {
+	if fp.mode == modeFolders {
+		return false
 	}
-
-	// Data rows exist — ensure selection is enabled.
-	fp.table.SetSelectable(true, false)
-
-	for i, origIdx := range fp.filteredIdxMap {
-		row := nextRow + i
-		f := fp.files[origIdx]
-
-		// Col 0: Name (with "* " prefix if selected)
-		name := f.Name
-		if origIdx == fp.selectedFileIdx {
-			name = "* " + name
-		}
-		fp.table.SetCell(row, 0,
-			tview.NewTableCell(name).
-				SetExpansion(1).
-				SetAlign(tview.AlignLeft))
-
-		// Col 1: Size (right-aligned, tight)
-		fp.table.SetCell(row, 1,
-			tview.NewTableCell(ssh.FormatSize(f.Size)).
-				SetAlign(tview.AlignRight).
-				SetExpansion(0).
-				SetMaxWidth(8))
-
-		// Col 2: Modified (short format)
-		fp.table.SetCell(row, 2,
-			tview.NewTableCell(f.ModTime.Format("Jan _2 15:04")).
-				SetAlign(tview.AlignLeft).
-				SetExpansion(0).
-				SetMaxWidth(12))
+	if len(fp.filterQuery) > 0 {
+		_, size := utf8.DecodeLastRuneInString(fp.filterQuery)
+		fp.filterQuery = fp.filterQuery[:len(fp.filterQuery)-size]
+		fp.rebuildFilter()
+		return true
 	}
+	return false
+}
 
-	// Preserve cursor on the selected item, or default to first data row
-	targetRow := 1
-	if fp.hasUpDir {
-		targetRow = 2 // skip "/ .." by default
-	}
-	if fp.selectedFileIdx >= 0 {
-		offset := 1
-		if fp.hasUpDir {
-			offset = 2
-		}
-		for i, origIdx := range fp.filteredIdxMap {
-			if origIdx == fp.selectedFileIdx {
-				targetRow = offset + i
-				break
-			}
-		}
-	}
-	totalDataRows := len(fp.filteredIdxMap)
-	if fp.hasUpDir {
-		totalDataRows++
-	}
-	if totalDataRows > 0 {
-		fp.table.Select(targetRow, 0)
+// ClearFilter resets the filter.
+func (fp *FilePaneModel) ClearFilter() {
+	fp.filterQuery = ""
+	fp.rebuildFilter()
+}
+
+// HasActiveFilter returns true if a filter is active.
+func (fp *FilePaneModel) HasActiveFilter() bool {
+	return fp.filterQuery != ""
+}
+
+// FilterQuery returns the current filter string.
+func (fp *FilePaneModel) FilterQuery() string {
+	return fp.filterQuery
+}
+
+// MoveUp moves cursor up.
+func (fp *FilePaneModel) MoveUp() {
+	if fp.cursor > 0 {
+		fp.cursor--
 	}
 }
 
-// rebuildFolderTable renders the folder list.
-func (fp *FilePane) rebuildFolderTable() {
-	if len(fp.folders) == 0 {
-		fp.table.SetSelectable(false, false)
-		fp.table.SetCell(1, 0,
-			tview.NewTableCell("(no folders)").
-				SetSelectable(false).
-				SetTextColor(tcell.ColorGray).
-				SetExpansion(1))
-		return
-	}
-
-	fp.table.SetSelectable(true, false)
-
-	for i, f := range fp.folders {
-		row := i + 1
-		fp.table.SetCell(row, 0,
-			tview.NewTableCell(f.Path).
-				SetExpansion(1).
-				SetAlign(tview.AlignLeft))
-		fp.table.SetCell(row, 1,
-			tview.NewTableCell("DIR").
-				SetAlign(tview.AlignRight).
-				SetExpansion(0).
-				SetMaxWidth(8).
-				SetTextColor(tcell.ColorAqua))
-		fp.table.SetCell(row, 2,
-			tview.NewTableCell("").
-				SetAlign(tview.AlignLeft).
-				SetExpansion(0).
-				SetMaxWidth(12))
-	}
-
-	// Restore cursor to last selected folder, or default to first.
-	targetRow := 1
-	if fp.selectedFolderIdx >= 0 && fp.selectedFolderIdx < len(fp.folders) {
-		targetRow = fp.selectedFolderIdx + 1
-	}
-	fp.table.Select(targetRow, 0)
-}
-
-// applyFilter rebuilds the table based on the current filterQuery.
-func (fp *FilePane) applyFilter() {
-	fp.rebuildTable()
-	if fp.onFilterChange != nil {
-		fp.onFilterChange(fp.filterQuery)
+// MoveDown moves cursor down.
+func (fp *FilePaneModel) MoveDown() {
+	total := fp.totalRows()
+	if fp.cursor < total-1 {
+		fp.cursor++
 	}
 }
 
-// SetSelectedFunc sets the callback for when a file is selected.
-func (fp *FilePane) SetSelectedFunc(fn func(idx int, file ssh.FileInfo)) {
-	fp.onSelect = fn
-}
-
-// SetFolderSelectedFunc sets the callback for when a folder is selected.
-func (fp *FilePane) SetFolderSelectedFunc(fn func(idx int, folder config.LogFolder)) {
-	fp.onFolderSelect = fn
-}
-
-// SetUpDirFunc sets the callback for when "/ .." is selected.
-func (fp *FilePane) SetUpDirFunc(fn func()) {
-	fp.onUpDir = fn
-}
-
-// SetFolders switches to folder mode and populates the folder list.
-func (fp *FilePane) SetFolders(folders []config.LogFolder) {
+// SetFolders switches to folder mode.
+func (fp *FilePaneModel) SetFolders(folders []config.LogFolder) {
 	fp.mode = modeFolders
 	fp.folders = folders
 	fp.files = nil
@@ -370,13 +147,16 @@ func (fp *FilePane) SetFolders(folders []config.LogFolder) {
 	fp.selectedFileIdx = -1
 	fp.filterQuery = ""
 	fp.hasUpDir = false
-	fp.table.SetSelectable(true, false)
-	fp.rebuildTable()
+	fp.message = ""
+	// Restore cursor to last selected folder
+	fp.cursor = 0
+	if fp.selectedFolderIdx >= 0 && fp.selectedFolderIdx < len(folders) {
+		fp.cursor = fp.selectedFolderIdx
+	}
 }
 
-// SetFiles populates the file table. Files should already be sorted.
-// If showUpDir is true, a "/ .." row is added at the top.
-func (fp *FilePane) SetFiles(dir string, files []ssh.FileInfo, showUpDir bool) {
+// SetFiles switches to files mode and populates file data.
+func (fp *FilePaneModel) SetFiles(dir string, files []ssh.FileInfo, showUpDir bool) {
 	fp.mode = modeFiles
 	fp.folders = nil
 	fp.files = files
@@ -384,122 +164,266 @@ func (fp *FilePane) SetFiles(dir string, files []ssh.FileInfo, showUpDir bool) {
 	fp.selectedFileIdx = -1
 	fp.filterQuery = ""
 	fp.hasUpDir = showUpDir
+	fp.message = ""
 	if showUpDir {
 		fp.folderPath = dir
 	} else {
 		fp.folderPath = ""
 	}
-	// Re-enable row selection (may have been disabled by Clear).
-	fp.table.SetSelectable(true, false)
-	fp.rebuildTable()
-
-	// Scroll to top and select first data row
-	fp.table.ScrollToBeginning()
-	firstDataRow := 1
-	if showUpDir {
-		firstDataRow = 2
-	}
-	if len(fp.filteredIdxMap) > 0 {
-		fp.table.Select(firstDataRow, 0)
-	} else if showUpDir {
-		fp.table.Select(1, 0)
-	} else {
-		fp.table.Select(0, 0)
+	fp.rebuildFilter()
+	// Default cursor to first data row (skip updir)
+	fp.cursor = 0
+	if showUpDir && len(fp.filteredIdxMap) > 0 {
+		fp.cursor = 1
 	}
 }
 
-// IsInFolderMode returns true if the pane is currently showing folders.
-func (fp *FilePane) IsInFolderMode() bool {
+// Clear resets the pane.
+func (fp *FilePaneModel) Clear() {
+	fp.mode = modeFiles
+	fp.files = nil
+	fp.folders = nil
+	fp.dir = ""
+	fp.folderPath = ""
+	fp.selectedFileIdx = -1
+	fp.selectedFolderIdx = -1
+	fp.filterQuery = ""
+	fp.hasUpDir = false
+	fp.message = ""
+	fp.cursor = 0
+	fp.filteredIdxMap = nil
+}
+
+// SetMessage sets a message to display (e.g. error).
+func (fp *FilePaneModel) SetMessage(msg string) {
+	fp.Clear()
+	fp.message = msg
+}
+
+// MarkSelected marks a file as selected.
+func (fp *FilePaneModel) MarkSelected(idx int) {
+	fp.selectedFileIdx = idx
+}
+
+// IsInFolderMode returns true if showing folders.
+func (fp *FilePaneModel) IsInFolderMode() bool {
 	return fp.mode == modeFolders
 }
 
-// Clear removes all items from the file table.
-func (fp *FilePane) Clear() {
-	fp.mode = modeFiles
-	fp.files = nil
-	fp.folders = nil
-	fp.dir = ""
-	fp.folderPath = ""
-	fp.selectedFileIdx = -1
-	fp.selectedFolderIdx = -1
-	fp.filterQuery = ""
-	fp.hasUpDir = false
-	fp.table.Clear()
-	// Disable row selection when empty — tview's Table navigation loops
-	// infinitely if selectable is true but no selectable rows exist.
-	fp.table.SetSelectable(false, false)
-	fp.table.SetTitle(" Files ")
-	fp.showHeader()
-}
-
-// SetMessage displays a centered message in the file pane (e.g. error state).
-func (fp *FilePane) SetMessage(msg string) {
-	fp.mode = modeFiles
-	fp.files = nil
-	fp.folders = nil
-	fp.dir = ""
-	fp.folderPath = ""
-	fp.selectedFileIdx = -1
-	fp.selectedFolderIdx = -1
-	fp.filterQuery = ""
-	fp.hasUpDir = false
-	fp.table.Clear()
-	fp.table.SetSelectable(false, false)
-	fp.table.SetTitle(" Files ")
-	fp.table.SetCell(0, 0,
-		tview.NewTableCell(msg).
-			SetSelectable(false).
-			SetAlign(tview.AlignCenter).
-			SetExpansion(1))
-}
-
-// MarkSelected marks a file (by original index) as selected with "* " prefix.
-func (fp *FilePane) MarkSelected(fileIdx int) {
-	fp.selectedFileIdx = fileIdx
-	fp.rebuildTable()
-}
-
-// ClearSelection removes the selection mark.
-func (fp *FilePane) ClearSelection() {
-	fp.selectedFileIdx = -1
-	fp.rebuildTable()
-}
-
-// HasActiveFilter returns true if there is a non-empty filter query.
-func (fp *FilePane) HasActiveFilter() bool {
-	return fp.filterQuery != ""
-}
-
-// SetFilterChangeFunc sets the callback for when the filter query changes.
-func (fp *FilePane) SetFilterChangeFunc(fn func(query string)) {
-	fp.onFilterChange = fn
-}
-
-// ClearFilter resets the filter query and rebuilds the table.
-func (fp *FilePane) ClearFilter() {
-	fp.filterQuery = ""
-	fp.rebuildTable()
-	if fp.onFilterChange != nil {
-		fp.onFilterChange("")
+// SelectedItem returns what's at the cursor.
+// Returns: isUpDir, folderIdx, folder, fileOrigIdx, file
+func (fp *FilePaneModel) SelectedItem() (isUpDir bool, folderIdx int, folder *config.LogFolder, fileOrigIdx int, file *ssh.FileInfo) {
+	if fp.mode == modeFolders {
+		if fp.cursor >= 0 && fp.cursor < len(fp.folders) {
+			return false, fp.cursor, &fp.folders[fp.cursor], -1, nil
+		}
+		return false, -1, nil, -1, nil
 	}
-}
-
-// GetDir returns the current directory being listed.
-func (fp *FilePane) GetDir() string {
-	return fp.dir
+	// Files mode
+	displayIdx := fp.cursor
+	if fp.hasUpDir {
+		if displayIdx == 0 {
+			return true, -1, nil, -1, nil
+		}
+		displayIdx--
+	}
+	if displayIdx >= 0 && displayIdx < len(fp.filteredIdxMap) {
+		origIdx := fp.filteredIdxMap[displayIdx]
+		return false, -1, nil, origIdx, &fp.files[origIdx]
+	}
+	return false, -1, nil, -1, nil
 }
 
 // GetFiles returns the current file list.
-func (fp *FilePane) GetFiles() []ssh.FileInfo {
+func (fp *FilePaneModel) GetFiles() []ssh.FileInfo {
 	return fp.files
 }
 
-// Widget returns the underlying tview primitive.
-func (fp *FilePane) Widget() tview.Primitive {
-	return fp.table
+// SetSize updates dimensions.
+func (fp *FilePaneModel) SetSize(w, h int) {
+	fp.width = w
+	fp.height = h
 }
 
-// Table returns the underlying table widget for focus management.
-func (fp *FilePane) Table() *tview.Table {
-	return fp.table
+// View renders the file pane.
+func (fp *FilePaneModel) View(focused bool) string {
+	var paneStyle, titleStyle lipgloss.Style
+	if focused {
+		paneStyle = focusedPaneStyle
+		titleStyle = focusedTitleStyle
+	} else {
+		paneStyle = unfocusedPaneStyle
+		titleStyle = unfocusedTitleStyle
+	}
+
+	paneStyle = paneStyle.Width(fp.width - 2).Height(fp.height - 2)
+
+	// Title
+	titleText := " Files "
+	if fp.mode == modeFolders {
+		titleText = " Folders "
+	} else if fp.folderPath != "" {
+		titleText = " " + fp.folderPath + " "
+	}
+	if fp.filterQuery != "" {
+		titleText = fmt.Sprintf("%s[%s] ", titleText, fp.filterQuery)
+	}
+
+	var b strings.Builder
+
+	// If there's a message, just show it
+	if fp.message != "" {
+		b.WriteString(fp.message)
+		content := paneStyle.Render(b.String())
+		title := titleStyle.Render(" Files ")
+		return placeTitleInBorder(content, title)
+	}
+
+	// Column widths
+	innerWidth := fp.width - 2
+	if innerWidth < 20 {
+		innerWidth = 20
+	}
+	sizeColW := 8
+	timeColW := 13
+	nameColW := innerWidth - sizeColW - timeColW - 3 // 1 space after name, 2 spaces after size
+	if nameColW < 10 {
+		nameColW = 10
+	}
+
+	// Header row
+	header := fmt.Sprintf("%-*s %*s  %s",
+		nameColW, "Name",
+		sizeColW, "Size",
+		padRight("Modify time", timeColW))
+	b.WriteString(tableHeaderStyle.Render(header))
+	b.WriteByte('\n')
+
+	if fp.mode == modeFolders {
+		fp.renderFolders(&b, nameColW, sizeColW, timeColW)
+	} else {
+		fp.renderFiles(&b, nameColW, sizeColW, timeColW)
+	}
+
+	content := paneStyle.Render(b.String())
+	title := titleStyle.Render(titleText)
+	return placeTitleInBorder(content, title)
+}
+
+func (fp *FilePaneModel) renderFolders(b *strings.Builder, nameW, sizeW, timeW int) {
+	if len(fp.folders) == 0 {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("(no folders)"))
+		return
+	}
+
+	innerHeight := fp.height - 5
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+
+	startIdx := 0
+	if fp.cursor >= innerHeight {
+		startIdx = fp.cursor - innerHeight + 1
+	}
+	endIdx := startIdx + innerHeight
+	if endIdx > len(fp.folders) {
+		endIdx = len(fp.folders)
+	}
+
+	lineWidth := fp.width - 2
+
+	for i := startIdx; i < endIdx; i++ {
+		name := truncateString(fp.folders[i].Path, nameW)
+		// Build plain-text line with proper column alignment
+		line := fmt.Sprintf("%-*s %*s  %s", nameW, name, sizeW, "DIR", strings.Repeat(" ", timeW))
+
+		if i == fp.cursor {
+			b.WriteString(selectedRowStyle.Render(padRight(line, lineWidth)))
+		} else {
+			// Color the DIR part after formatting
+			plainLine := fmt.Sprintf("%-*s ", nameW, name)
+			dirPart := lipgloss.NewStyle().Foreground(accentColor).Render(fmt.Sprintf("%*s", sizeW, "DIR"))
+			b.WriteString(plainLine + dirPart + strings.Repeat(" ", timeW+2))
+		}
+		if i < endIdx-1 {
+			b.WriteByte('\n')
+		}
+	}
+}
+
+func (fp *FilePaneModel) renderFiles(b *strings.Builder, nameW, sizeW, timeW int) {
+	total := fp.totalRows()
+	if total == 0 && len(fp.files) == 0 {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("(no files found)"))
+		return
+	}
+
+	innerHeight := fp.height - 5
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+
+	startIdx := 0
+	if fp.cursor >= innerHeight {
+		startIdx = fp.cursor - innerHeight + 1
+	}
+	endIdx := startIdx + innerHeight
+	if endIdx > total {
+		endIdx = total
+	}
+
+	lineWidth := fp.width - 2
+
+	for di := startIdx; di < endIdx; di++ {
+		fileDisplayIdx := di
+		if fp.hasUpDir {
+			if di == 0 {
+				// Up-dir row — build as plain text, apply color after
+				upLine := fmt.Sprintf("%-*s %*s  %s", nameW, "/..", sizeW, "UP-DIR", strings.Repeat(" ", timeW))
+				if di == fp.cursor {
+					b.WriteString(selectedRowStyle.Render(padRight(upLine, lineWidth)))
+				} else {
+					b.WriteString(lipgloss.NewStyle().Foreground(accentColor).Render(padRight(upLine, lineWidth)))
+				}
+				if di < endIdx-1 {
+					b.WriteByte('\n')
+				}
+				continue
+			}
+			fileDisplayIdx--
+		}
+
+		if fileDisplayIdx >= 0 && fileDisplayIdx < len(fp.filteredIdxMap) {
+			origIdx := fp.filteredIdxMap[fileDisplayIdx]
+			f := fp.files[origIdx]
+			name := f.Name
+			isActive := origIdx == fp.selectedFileIdx
+
+			if isActive {
+				name = "* " + name
+			}
+			name = truncateString(name, nameW)
+
+			if di == fp.cursor {
+				// Cursor row — plain text, full-width highlight
+				line := fmt.Sprintf("%-*s %*s  %s", nameW, name, sizeW, ssh.FormatSize(f.Size), f.ModTime.Format("Jan _2 15:04"))
+				b.WriteString(selectedRowStyle.Render(padRight(line, lineWidth)))
+			} else if isActive {
+				// Active file (not cursor) — blue marker
+				marker := activeMarkerStyle.Render("* ")
+				plainName := truncateString(f.Name, nameW-2)
+				rest := fmt.Sprintf(" %*s  %s", sizeW, ssh.FormatSize(f.Size), f.ModTime.Format("Jan _2 15:04"))
+				b.WriteString(marker + padRight(plainName, nameW-2) + rest)
+			} else {
+				line := fmt.Sprintf("%-*s %*s  %s", nameW, name, sizeW, ssh.FormatSize(f.Size), f.ModTime.Format("Jan _2 15:04"))
+				b.WriteString(line)
+			}
+		} else {
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("(no matches)"))
+		}
+
+		if di < endIdx-1 {
+			b.WriteByte('\n')
+		}
+	}
 }
