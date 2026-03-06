@@ -51,7 +51,7 @@ func connectAndListCmd(pool *ssh.Pool, srv config.ServerConfig, folder config.Lo
 	}
 }
 
-// countAndReadFileCmd reads the last N lines and counts total lines.
+// countAndReadFileCmd reads the last N lines and counts total lines in a single command.
 func countAndReadFileCmd(pool *ssh.Pool, srv config.ServerConfig, fullPath string, tailLines int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -67,16 +67,14 @@ func countAndReadFileCmd(pool *ssh.Pool, srv config.ServerConfig, fullPath strin
 			opts.SudoPassword = pool.GetSudoPassword(srv)
 		}
 
-		startLine := 1
-		if totalLines, err := ssh.CountLines(client, fullPath, opts); err == nil {
-			if totalLines > tailLines {
-				startLine = totalLines - tailLines + 1
-			}
-		}
-
-		content, err := ssh.ReadFileContent(client, fullPath, tailLines, opts)
+		totalLines, content, err := ssh.CountAndReadFileContent(client, fullPath, tailLines, opts)
 		if err != nil {
 			return FileReadErrorMsg{Err: err}
+		}
+
+		startLine := 1
+		if totalLines > tailLines {
+			startLine = totalLines - tailLines + 1
 		}
 
 		return FileContentMsg{Content: content, StartLine: startLine}

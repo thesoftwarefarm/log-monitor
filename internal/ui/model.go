@@ -196,15 +196,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case FileContentMsg:
 		m.viewerPane.SetText(msg.Content, msg.StartLine)
-		// Now start tailing
-		if m.currentServer != nil && m.currentFile != nil && m.currentFolder != nil {
-			fullPath := filepath.Join(m.currentFolder.Path, m.currentFile.Name)
-			ch := make(chan []byte, 64)
-			m.tailChan = ch
-			return m, tea.Batch(
-				startTailCmd(m.pool, *m.currentServer, fullPath, ch),
-			)
-		}
+		// Tailing is already started in parallel from onFileSelected
 		return m, nil
 
 	case FileReadErrorMsg:
@@ -689,7 +681,13 @@ func (m Model) onFileSelected(idx int, file ssh.FileInfo) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m, countAndReadFileCmd(m.pool, srv, fullPath, m.cfg.Defaults.TailLines)
+	// Start initial read and tail in parallel to avoid sequential sudo delays
+	ch := make(chan []byte, 64)
+	m.tailChan = ch
+	return m, tea.Batch(
+		countAndReadFileCmd(m.pool, srv, fullPath, m.cfg.Defaults.TailLines),
+		startTailCmd(m.pool, srv, fullPath, ch),
+	)
 }
 
 var binaryExtensions = map[string]bool{
