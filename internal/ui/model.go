@@ -653,7 +653,24 @@ func (m Model) onFileSelected(idx int, file ssh.FileInfo) (tea.Model, tea.Cmd) {
 	setTerminalTitle(fmt.Sprintf("Log Monitor — %s:%s", srv.Name, fullPath))
 	m.viewerPane.Clear()
 
+	if isBinaryExtension(file.Name) {
+		m.viewerPane.SetMessage("Binary file — cannot tail\n\nUse F5 to download instead.")
+		return m, nil
+	}
+
 	return m, countAndReadFileCmd(m.pool, srv, fullPath, m.cfg.Defaults.TailLines)
+}
+
+var binaryExtensions = map[string]bool{
+	".gz": true, ".bz2": true, ".xz": true, ".zst": true,
+	".zip": true, ".tar": true, ".7z": true, ".rar": true,
+	".lz4": true, ".br": true, ".lzo": true, ".z": true,
+	".tgz": true, ".tbz2": true, ".txz": true,
+}
+
+func isBinaryExtension(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	return binaryExtensions[ext]
 }
 
 // onUpDir returns to folder view.

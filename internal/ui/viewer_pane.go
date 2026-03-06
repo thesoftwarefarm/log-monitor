@@ -81,6 +81,7 @@ func (vp *ViewerPaneModel) SetText(text string, startLine int) {
 
 	rawLines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	for _, line := range rawLines {
+		line = sanitizeLine(line)
 		origNum := vp.nextLineNum
 		vp.nextLineNum++
 
@@ -113,6 +114,7 @@ func (vp *ViewerPaneModel) AppendTailData(data []byte) {
 			break
 		}
 
+		line = sanitizeLine(line)
 		origNum := vp.nextLineNum
 		vp.nextLineNum++
 
@@ -262,6 +264,30 @@ func (vp *ViewerPaneModel) View(focused bool) string {
 	content := paneStyle.Render(vp.viewport.View())
 	title := titleStyle.Render(vp.title)
 	return placeTitleInBorder(content, title)
+}
+
+// sanitizeLine strips control characters (except tab) from a line to prevent
+// binary data from corrupting the terminal display.
+func sanitizeLine(s string) string {
+	clean := true
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b < 0x20 && b != '\t' || b == 0x7F {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	buf := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b >= 0x20 && b != 0x7F || b == '\t' {
+			buf = append(buf, b)
+		}
+	}
+	return string(buf)
 }
 
 // highlightFilterANSI wraps occurrences of query with ANSI highlight (yellow background).
