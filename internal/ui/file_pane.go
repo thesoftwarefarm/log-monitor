@@ -137,6 +137,31 @@ func (fp *FilePaneModel) MoveDown() {
 	}
 }
 
+// SetCursorFromY moves the cursor based on a mouse Y coordinate within the pane.
+// The pane layout is: row 0 = border, row 1 = table header, row 2+ = items.
+func (fp *FilePaneModel) SetCursorFromY(y int) {
+	total := fp.totalRows()
+	if total == 0 {
+		return
+	}
+	innerHeight := fp.height - 5
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+	startIdx := 0
+	if fp.cursor >= innerHeight {
+		startIdx = fp.cursor - innerHeight + 1
+	}
+	itemIdx := startIdx + (y - 2) // row 0=border, row 1=table header
+	if itemIdx < 0 {
+		itemIdx = 0
+	}
+	if itemIdx >= total {
+		itemIdx = total - 1
+	}
+	fp.cursor = itemIdx
+}
+
 // SetFolders switches to folder mode.
 func (fp *FilePaneModel) SetFolders(folders []config.LogFolder) {
 	fp.mode = modeFolders
@@ -271,9 +296,14 @@ func (fp *FilePaneModel) View(focused bool) string {
 
 	var b strings.Builder
 
-	// If there's a message, just show it
+	// If there's a message, show it with word wrapping
 	if fp.message != "" {
-		b.WriteString(fp.message)
+		msgWidth := fp.width - 4
+		if msgWidth < 10 {
+			msgWidth = 10
+		}
+		wrapped := lipgloss.NewStyle().Width(msgWidth).Render(fp.message)
+		b.WriteString(wrapped)
 		content := paneStyle.Render(b.String())
 		title := titleStyle.Render(" Files ")
 		return placeTitleInBorder(content, title)
@@ -400,23 +430,27 @@ func (fp *FilePaneModel) renderFiles(b *strings.Builder, nameW, sizeW, timeW int
 			isActive := origIdx == fp.selectedFileIdx
 
 			if isActive {
-				name = "* " + name
+				name = "› " + name
 			}
 			name = truncateString(name, nameW)
 
+			sizeStr := ssh.FormatSize(f.Size)
+			timeStr := f.ModTime.Format("Jan _2 15:04")
+
 			if di == fp.cursor {
 				// Cursor row — plain text, full-width highlight
-				line := fmt.Sprintf("%-*s %*s  %s", nameW, name, sizeW, ssh.FormatSize(f.Size), f.ModTime.Format("Jan _2 15:04"))
+				line := fmt.Sprintf("%-*s %*s  %s", nameW, name, sizeW, sizeStr, timeStr)
 				b.WriteString(selectedRowStyle.Render(padRight(line, lineWidth)))
 			} else if isActive {
 				// Active file (not cursor) — blue marker
-				marker := activeMarkerStyle.Render("* ")
+				marker := activeMarkerStyle.Render("› ")
 				plainName := truncateString(f.Name, nameW-2)
-				rest := fmt.Sprintf(" %*s  %s", sizeW, ssh.FormatSize(f.Size), f.ModTime.Format("Jan _2 15:04"))
-				b.WriteString(marker + padRight(plainName, nameW-2) + rest)
+				meta := dimStyle.Render(fmt.Sprintf(" %*s  %s", sizeW, sizeStr, timeStr))
+				b.WriteString(marker + padRight(plainName, nameW-2) + meta)
 			} else {
-				line := fmt.Sprintf("%-*s %*s  %s", nameW, name, sizeW, ssh.FormatSize(f.Size), f.ModTime.Format("Jan _2 15:04"))
-				b.WriteString(line)
+				namePart := fmt.Sprintf("%-*s", nameW, name)
+				meta := dimStyle.Render(fmt.Sprintf(" %*s  %s", sizeW, sizeStr, timeStr))
+				b.WriteString(namePart + meta)
 			}
 		} else {
 			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("(no matches)"))

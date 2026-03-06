@@ -44,14 +44,18 @@ var (
 				Background(selectedBg).
 				Foreground(lipgloss.Color("15"))
 
-	// Active selection marker style (the "* " prefix on selected server/file)
+	// Active selection marker style (the "› " prefix on selected server/file)
 	activeMarkerStyle = lipgloss.NewStyle().
 				Foreground(focusedColor).
 				Bold(true)
 
+	// Dim style for secondary columns (size, date)
+	dimStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8"))
+
 	// Modal styles
 	modalStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.DoubleBorder()).
 			BorderForeground(lipgloss.Color("#03AFFF")).
 			Padding(1, 2).
 			Background(lipgloss.Color("#1a1a2e"))
@@ -64,7 +68,19 @@ var (
 			Foreground(lipgloss.Color("8"))
 
 	modalButtonStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#03AFFF")).
-				Bold(true)
+				Foreground(lipgloss.Color("15")).
+				Background(lipgloss.Color("#03AFFF")).
+				Bold(true).
+				Padding(0, 1)
+
+	modalShadowStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("8"))
+
+	// Status bar key style
+	statusKeyStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#03AFFF"))
+
+	statusSepStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8"))
 
 )

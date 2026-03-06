@@ -74,6 +74,11 @@ type Model struct {
 	serverPaneWidth int
 	filePaneWidth   int
 
+	// Double-click tracking
+	lastClickTime time.Time
+	lastClickY    int
+	lastClickPane pane
+
 	// Status bar
 	contextMsg string
 	errorMsg   string
@@ -160,9 +165,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ConnectErrorMsg:
-		m.errorMsg = fmt.Sprintf("connect %s: %v", msg.Server.Host, msg.Err)
-		m.filePane.SetMessage("Unable to connect")
-		m.viewerPane.SetMessage("Unable to connect\n\n" + m.errorMsg)
+		errDetail := fmt.Sprintf("connect %s: %v", msg.Server.Host, msg.Err)
+		m.filePane.SetMessage("Unable to connect\n\n" + errDetail)
 		m.focused = paneServer
 		return m, nil
 
@@ -185,9 +189,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case FilesErrorMsg:
-		m.errorMsg = fmt.Sprintf("list files: %v", msg.Err)
-		m.filePane.SetMessage("Unable to list files")
-		m.viewerPane.SetMessage("Unable to list files\n\n" + m.errorMsg)
+		errDetail := fmt.Sprintf("list files: %v", msg.Err)
+		m.filePane.SetMessage("Unable to list files\n\n" + errDetail)
 		m.focused = paneServer
 		return m, nil
 
@@ -214,7 +217,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tailing = true
 		if m.currentServer != nil && m.currentFile != nil && m.currentFolder != nil {
 			fullPath := filepath.Join(m.currentFolder.Path, m.currentFile.Name)
-			m.setContext(fmt.Sprintf("\033[32mTailing\033[0m %s:%s", m.currentServer.Name, fullPath))
+			m.setContext(fmt.Sprintf("\033[38;2;3;175;255mTailing\033[0m %s:%s", m.currentServer.Name, fullPath))
 			m.viewerPane.StartSpinner(fmt.Sprintf("Tailing: %s", m.currentFile.Name))
 			var cmds []tea.Cmd
 			cmds = append(cmds, waitForTailData(m.tailChan))
@@ -453,12 +456,40 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseButtonLeft:
 		if msg.Action == tea.MouseActionPress {
+			// Determine which pane was clicked
+			var clickedPane pane
 			if msg.X < m.serverPaneWidth {
-				m.focused = paneServer
+				clickedPane = paneServer
 			} else if msg.X < m.serverPaneWidth+m.filePaneWidth {
-				m.focused = paneFile
+				clickedPane = paneFile
 			} else {
-				m.focused = paneViewer
+				clickedPane = paneViewer
+			}
+
+			// Double-click detection
+			now := time.Now()
+			isDoubleClick := clickedPane == m.lastClickPane &&
+				msg.Y == m.lastClickY &&
+				now.Sub(m.lastClickTime) < 400*time.Millisecond
+
+			m.lastClickTime = now
+			m.lastClickY = msg.Y
+			m.lastClickPane = clickedPane
+
+			m.focused = clickedPane
+
+			// Move cursor to clicked row in server/file panes
+			switch clickedPane {
+			case paneServer:
+				m.serverPane.SetCursorFromY(msg.Y)
+				if isDoubleClick {
+					return m.handleEnter()
+				}
+			case paneFile:
+				m.filePane.SetCursorFromY(msg.Y)
+				if isDoubleClick {
+					return m.handleEnter()
+				}
 			}
 		}
 
@@ -873,13 +904,17 @@ func (m Model) submitModal() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// modalInnerWidth is the usable text width inside the modal (Width - horizontal padding).
+const modalInnerWidth = 70 - 4 // modal Width(70) minus Padding(1, 2) = 2 left + 2 right
+
 // styledInput creates a textinput with modal-appropriate styling.
 func styledInput() textinput.Model {
 	ti := textinput.New()
 	ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#03AFFF"))
-	ti.TextStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2a2a3e")).Foreground(lipgloss.Color("15"))
-	ti.PlaceholderStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2a2a3e")).Foreground(lipgloss.Color("8"))
-	ti.PromptStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2a2a3e")).Foreground(lipgloss.Color("#03AFFF"))
+	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#03AFFF"))
+	ti.Width = modalInnerWidth - 2 // subtract prompt width "> "
 	return ti
 }
 
@@ -889,7 +924,6 @@ func (m Model) showSudoPrompt(srv config.ServerConfig) Model {
 	ti.EchoMode = textinput.EchoPassword
 	ti.EchoCharacter = '*'
 	ti.Focus()
-	ti.Width = 40
 
 	m.modal = modalSudo
 	m.modalInput = ti
@@ -902,7 +936,6 @@ func (m Model) showFilterPrompt() Model {
 	ti.Placeholder = "Filter term"
 	ti.SetValue(m.viewerPane.GetTailFilter())
 	ti.Focus()
-	ti.Width = 40
 
 	m.modal = modalFilter
 	m.modalInput = ti
@@ -923,12 +956,10 @@ func (m Model) showDownloadDialog() (tea.Model, tea.Cmd) {
 	ti1.Placeholder = "Local path"
 	ti1.SetValue(defaultDir)
 	ti1.Focus()
-	ti1.Width = 50
 
 	ti2 := styledInput()
 	ti2.Placeholder = "Filename"
 	ti2.SetValue(m.currentFile.Name)
-	ti2.Width = 50
 
 	m.modal = modalDownload
 	m.modalInput = ti1
@@ -940,9 +971,9 @@ func (m Model) showDownloadDialog() (tea.Model, tea.Cmd) {
 func (m Model) renderModal(background string) string {
 	var title, content string
 
-	buttonOK := modalButtonStyle.Render("[Enter]") + " OK"
-	buttonCancel := modalButtonStyle.Render("[Esc]") + " Cancel"
-	buttonTab := modalButtonStyle.Render("[Tab]") + " Switch field"
+	buttonOK := modalButtonStyle.Render("Enter OK")
+	buttonCancel := modalButtonStyle.Render("Esc Cancel")
+	buttonTab := modalButtonStyle.Render("Tab Next")
 
 	switch m.modal {
 	case modalSudo:
@@ -955,12 +986,13 @@ func (m Model) renderModal(background string) string {
 
 	case modalDownload:
 		title = " Download File "
-		content = modalHintStyle.Render("Path:") + "\n" + m.modalInput.View() +
+		content = modalHintStyle.Render("Download remote file to local machine") +
+			"\n\n" + modalHintStyle.Render("Local path:") + "\n" + m.modalInput.View() +
 			"\n\n" + modalHintStyle.Render("Filename:") + "\n" + m.modalInput2.View() +
 			"\n\n" + buttonOK + "  " + buttonTab + "  " + buttonCancel
 	}
 
-	modalBox := modalStyle.Width(56).Render(
+	modalBox := modalStyle.Width(70).Render(
 		modalTitleStyle.Render(title) + "\n\n" + content,
 	)
 
@@ -979,20 +1011,47 @@ func (m Model) renderModal(background string) string {
 		startCol = 0
 	}
 
+	shadowChar := modalShadowStyle.Render("▒")
+
+	const ansiRst = "\033[0m"
+
 	modalLines := strings.Split(modalBox, "\n")
 	for i, ml := range modalLines {
 		row := startRow + i
 		if row < len(bgLines) {
-			// Replace the entire row: left padding + modal line + right padding
-			leftPad := strings.Repeat(" ", startCol)
-			mlWidth := lipgloss.Width(ml)
-			rightPadW := m.width - startCol - mlWidth
-			rightPad := ""
-			if rightPadW > 0 {
-				rightPad = strings.Repeat(" ", rightPadW)
+			bg := bgLines[row]
+			// Preserve background content on both sides of the modal
+			leftEnd := runeIndex(bg, startCol)
+			bgLeft := bg[:leftEnd]
+
+			shadowW := 0
+			shadow := ""
+			if startCol+modalW < m.width {
+				shadow = shadowChar
+				shadowW = 1
 			}
-			bgLines[row] = leftPad + ml + rightPad
+
+			rightStart := runeIndex(bg, startCol+modalW+shadowW)
+			bgRight := bg[rightStart:]
+
+			bgLines[row] = bgLeft + ansiRst + ml + ansiRst + shadow + ansiRst + bgRight
 		}
+	}
+
+	// Bottom shadow row
+	shadowRow := startRow + len(modalLines)
+	if shadowRow < len(bgLines) {
+		bg := bgLines[shadowRow]
+		leftEnd := runeIndex(bg, startCol+1)
+		bgLeft := bg[:leftEnd]
+
+		shadowLine := strings.Repeat("▒", modalW)
+		shadow := modalShadowStyle.Render(shadowLine)
+
+		rightStart := runeIndex(bg, startCol+1+modalW)
+		bgRight := bg[rightStart:]
+
+		bgLines[shadowRow] = bgLeft + ansiRst + shadow + ansiRst + bgRight
 	}
 
 	return strings.Join(bgLines, "\n")

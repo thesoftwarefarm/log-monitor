@@ -100,6 +100,30 @@ func (sp *ServerPaneModel) MoveDown() {
 	}
 }
 
+// SetCursorFromY moves the cursor based on a mouse Y coordinate within the pane.
+// The pane layout is: row 0 = border, row 1 = header, row 2+ = items.
+func (sp *ServerPaneModel) SetCursorFromY(y int) {
+	if len(sp.filteredIdxMap) == 0 {
+		return
+	}
+	innerHeight := sp.height - 4
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+	startIdx := 0
+	if sp.cursor >= innerHeight {
+		startIdx = sp.cursor - innerHeight + 1
+	}
+	itemIdx := startIdx + (y - 2) // row 0=border, row 1=header
+	if itemIdx < 0 {
+		itemIdx = 0
+	}
+	if itemIdx >= len(sp.filteredIdxMap) {
+		itemIdx = len(sp.filteredIdxMap) - 1
+	}
+	sp.cursor = itemIdx
+}
+
 // SelectedServer returns the server at the cursor, or nil.
 func (sp *ServerPaneModel) SelectedServer() (int, *config.ServerConfig) {
 	if len(sp.filteredIdxMap) == 0 {
@@ -173,14 +197,14 @@ func (sp *ServerPaneModel) View(focused bool) string {
 			// Cursor row — full-width highlight
 			display := name
 			if origIdx == sp.selectedIdx {
-				display = "* " + display
+				display = "› " + display
 			}
 			display = truncateString(display, lineWidth)
 			display = padRight(display, lineWidth)
 			b.WriteString(selectedRowStyle.Render(display))
 		} else if origIdx == sp.selectedIdx {
 			// Active server (not cursor) — blue marker
-			marker := activeMarkerStyle.Render("* ")
+			marker := activeMarkerStyle.Render("› ")
 			display := truncateString(name, lineWidth-2)
 			b.WriteString(marker + display)
 		} else {
