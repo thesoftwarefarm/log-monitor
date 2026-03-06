@@ -7,15 +7,16 @@ A terminal-based log monitoring application that allows you to tail and monitor 
 - **Multi-server monitoring**: Connect to multiple remote servers via SSH
 - **Real-time log tailing**: Stream log files in real-time with live spinner indicator
 - **Multi-folder support**: Configure multiple log directories per server
-- **Sudo support**: Read privileged log files with sudo (prompts for password)
+- **Sudo support**: Read privileged log files with sudo (prompts for password, optimized for minimal auth delay)
 - **Syntax colorization**: Auto-highlights log levels, timestamps, IPs, HTTP methods/status codes, and key=value pairs
 - **Tail filtering**: Filter incoming log lines in real-time (`F7`)
 - **File download**: Download remote log files to your local machine (`F5`)
-- **Fuzzy search**: Type to filter server and file lists
+- **Fuzzy search**: Type to filter server and file lists instantly
 - **Auto-selection**: CLI flags to jump directly to a server, folder, or file at startup
-- **Interactive TUI**: Three-pane terminal interface built with [tview](https://github.com/rivo/tview)
-- **Copy mode**: Press `F9` to enable native text selection for copying log content
-- **Mouse support**: Click to focus panes, scroll to navigate
+- **Mouse support**: Click to focus panes, click/double-click to select items, scroll wheel navigation
+- **Text selection**: Hold Shift + click/drag to select and copy text (native terminal selection)
+- **Binary file protection**: Detects compressed/binary files and prevents terminal corruption
+- **Interactive TUI**: Three-pane terminal interface built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
 
 ## Prerequisites
 
@@ -65,9 +66,6 @@ servers:
       - path: "/var/log/nginx"
         file_patterns:
           - "*.log"
-    file_patterns:
-      - "*.log"
-      - "*.log.*"
 
   # Sudo access for privileged log files
   - name: "Staging DB"
@@ -117,10 +115,7 @@ servers:
 | `auth.method` | `"key"`, `"agent"`, or `"password"` | No (auto-detects) |
 | `auth.key_path` | Path to SSH private key | No |
 | `sudo` | Use sudo for file operations | No |
-| `file_patterns` | Glob patterns to filter files | No |
-| `log_folders` | Multiple log directories (see below) | * |
-
-\*
+| `log_folders` | Log directories to monitor (see below) | Yes |
 
 #### Log Folders
 
@@ -179,14 +174,14 @@ Use CLI flags to skip manual navigation at startup. All flags are optional and c
 The application has a three-pane layout with a status bar:
 
 ```
-[Server Pane (30 cols)] [File Pane (1x flex)] [Viewer Pane (2x flex)]
-[Status Bar                                                         ]
+[Locations (30 cols)] [Files/Folders (1x flex)] [Log Viewer (2x flex)]
+[Status Bar                                                          ]
 ```
 
-- **Server Pane** (left): List of configured servers. Type to fuzzy-filter.
-- **File Pane** (middle): Folders or files on the selected server. Type to fuzzy-filter.
-- **Viewer Pane** (right): Log content with live tail and syntax colorization.
-- **Status Bar** (bottom): Context info and keybinding hints.
+- **Locations** (left): List of configured servers. Type to fuzzy-filter.
+- **Files/Folders** (middle): Folders (when multi-folder) or files on the selected server. Type to fuzzy-filter files.
+- **Log Viewer** (right): Log content with live tail, syntax colorization, and line numbers.
+- **Status Bar** (bottom): Context info, keybinding hints, and error messages.
 
 ### Key Bindings
 
@@ -197,7 +192,6 @@ The application has a three-pane layout with a status bar:
 | `Ctrl-C` | Quit |
 | `Tab` | Focus next pane |
 | `Shift-Tab` | Focus previous pane |
-| `1` / `2` / `3` | Jump to pane by number |
 | `Esc` | Clear filter, stop tail, or go back |
 
 #### Server and File Panes
@@ -207,7 +201,8 @@ The application has a three-pane layout with a status bar:
 | Type any letter | Fuzzy-filter the list |
 | `Backspace` | Delete last filter character |
 | `Enter` | Select item |
-| `r` | Refresh file list |
+| `Up` / `Down` | Navigate list |
+| `PgUp` / `PgDn` | Page up/down |
 
 #### Viewer Pane
 
@@ -215,11 +210,21 @@ The application has a three-pane layout with a status bar:
 |-----|--------|
 | `g` / `Home` | Jump to top |
 | `G` / `End` | Jump to bottom |
+| `Up` / `Down` | Scroll line by line |
+| `PgUp` / `PgDn` | Scroll page by page |
 | `F5` | Download current file |
 | `F7` | Set tail filter (grep-like) |
-| `F9` | Toggle copy mode (native text selection) |
 | `r` | Refresh file list |
-| `Esc` | Stop tail / exit copy mode |
+| `Esc` | Stop tail |
+
+#### Mouse
+
+| Action | Effect |
+|--------|--------|
+| Click | Focus pane, select item in list |
+| Double-click | Select item (same as Enter) |
+| Scroll wheel | Navigate lists or scroll viewer |
+| Shift + click/drag | Native text selection (for copying) |
 
 ## Authentication Methods
 
@@ -247,10 +252,12 @@ auth:
 
 ## Dependencies
 
-- [tview](https://github.com/rivo/tview) - Terminal UI library
-- [tcell](https://github.com/gdamore/tcell) - Terminal cell interface
+- [Bubble Tea](https://github.com/charmbracelet/bubbletea) - TUI framework (Elm architecture)
+- [lipgloss](https://github.com/charmbracelet/lipgloss) - Style definitions and layout
+- [bubbles](https://github.com/charmbracelet/bubbles) - TUI components (viewport, textinput)
 - [golang.org/x/crypto](https://golang.org/x/crypto) - SSH client implementation
 - [gopkg.in/yaml.v3](https://gopkg.in/yaml.v3) - YAML configuration parsing
+- [shellescape](https://al.essio.dev/pkg/shellescape) - Safe shell argument escaping
 
 ## Troubleshooting
 
@@ -274,9 +281,13 @@ The debug log captures SSH connections, file operations, UI events, and error de
    - Enable `sudo: true` in the server config for privileged files
 
 3. **No Files Found**
-   - Verify `log_path` or `log_folders` paths are correct
+   - Verify `log_folders` paths are correct
    - Check if `file_patterns` are too restrictive
    - Ensure the directory contains log files
+
+4. **Slow tailing with sudo**
+   - This is normal for the first file selection (sudo authentication)
+   - Subsequent operations reuse cached connections
 
 ## Create a new release:
 ```
