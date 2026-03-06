@@ -100,6 +100,33 @@ func (sp *ServerPaneModel) MoveDown() {
 	}
 }
 
+// PageUp moves cursor up by one page.
+func (sp *ServerPaneModel) PageUp() {
+	pageSize := sp.height - 4
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	sp.cursor -= pageSize
+	if sp.cursor < 0 {
+		sp.cursor = 0
+	}
+}
+
+// PageDown moves cursor down by one page.
+func (sp *ServerPaneModel) PageDown() {
+	pageSize := sp.height - 4
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	sp.cursor += pageSize
+	if max := len(sp.filteredIdxMap) - 1; sp.cursor > max {
+		sp.cursor = max
+	}
+	if sp.cursor < 0 {
+		sp.cursor = 0
+	}
+}
+
 // SetCursorFromY moves the cursor based on a mouse Y coordinate within the pane.
 // The pane layout is: row 0 = border, row 1 = header, row 2+ = items.
 func (sp *ServerPaneModel) SetCursorFromY(y int) {

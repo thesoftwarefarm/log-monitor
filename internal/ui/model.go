@@ -178,7 +178,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FilesLoadedMsg:
 		m.filePane.SetFiles(msg.Dir, msg.Files, msg.ShowUpDir)
 		m.errorMsg = ""
-		m.setContext(fmt.Sprintf("\033[32m%s\033[0m — Select a file", m.currentServer.Name))
+		m.setContext(fmt.Sprintf("\033[38;2;3;175;255m%s\033[0m — Select a file", m.currentServer.Name))
 		// Fire auto-select callback if set
 		if m.onFilesLoaded != nil {
 			cb := m.onFilesLoaded
@@ -412,13 +412,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "pgup":
-		if m.focused == paneViewer {
+		switch m.focused {
+		case paneServer:
+			m.serverPane.PageUp()
+		case paneFile:
+			m.filePane.PageUp()
+		case paneViewer:
 			m.viewerPane.ScrollUp(m.viewerPane.viewport.Height)
 		}
 		return m, nil
 
 	case "pgdown":
-		if m.focused == paneViewer {
+		switch m.focused {
+		case paneServer:
+			m.serverPane.PageDown()
+		case paneFile:
+			m.filePane.PageDown()
+		case paneViewer:
 			m.viewerPane.ScrollDown(m.viewerPane.viewport.Height)
 		}
 		return m, nil
@@ -620,7 +630,7 @@ func (m Model) onServerSelected(idx int, srv config.ServerConfig) (tea.Model, te
 	if len(folders) > 1 {
 		m.filePane.SetFolders(folders)
 		m.focused = paneFile
-		m.setContext(fmt.Sprintf("\033[32m%s\033[0m — select a folder", srv.Name))
+		m.setContext(fmt.Sprintf("\033[38;2;3;175;255m%s\033[0m — select a folder", srv.Name))
 		return m, nil
 	}
 
@@ -677,7 +687,21 @@ func (m Model) onFileSelected(idx int, file ssh.FileInfo) (tea.Model, tea.Cmd) {
 	m.viewerPane.Clear()
 
 	if isBinaryExtension(file.Name) {
-		m.viewerPane.SetMessage("Binary file — cannot tail\n\nUse F5 to download instead.")
+		icon := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Render("⚠")
+		title := lipgloss.NewStyle().Bold(true).Render("Binary File")
+		subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("This file cannot be tailed.")
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(
+			"Press " + lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Render("F5") + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(" to download instead."))
+
+		content := lipgloss.JoinVertical(lipgloss.Center,
+			icon+"  "+title, "", subtitle, hint)
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("8")).
+			Padding(1, 4).
+			Render(content)
+
+		m.viewerPane.SetCenteredMessage(box)
 		return m, nil
 	}
 
@@ -711,7 +735,7 @@ func (m Model) onUpDir() (tea.Model, tea.Cmd) {
 
 	if m.currentServer != nil {
 		m.filePane.SetFolders(m.currentServer.LogFolders)
-		m.setContext(fmt.Sprintf("\033[32m%s\033[0m — select a folder", m.currentServer.Name))
+		m.setContext(fmt.Sprintf("\033[38;2;3;175;255m%s\033[0m — select a folder", m.currentServer.Name))
 	}
 	return m, nil
 }

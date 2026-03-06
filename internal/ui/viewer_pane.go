@@ -157,7 +157,7 @@ func (vp *ViewerPaneModel) Clear() {
 	vp.rebuildContent()
 }
 
-// SetMessage displays a centered message.
+// SetMessage displays a message (plain, top-aligned).
 func (vp *ViewerPaneModel) SetMessage(msg string) {
 	vp.lines = nil
 	vp.title = defaultViewerTitle
@@ -166,7 +166,22 @@ func (vp *ViewerPaneModel) SetMessage(msg string) {
 	vp.spinning = false
 	vp.startLineNum = 1
 	vp.nextLineNum = 1
-	vp.viewport.SetContent("\n\n\n" + msg)
+	vp.viewport.SetContent(msg)
+}
+
+// SetCenteredMessage displays a pre-rendered block centered in the viewport.
+func (vp *ViewerPaneModel) SetCenteredMessage(block string) {
+	vp.lines = nil
+	vp.title = defaultViewerTitle
+	vp.tailFilter = ""
+	vp.lineCount = 0
+	vp.spinning = false
+	vp.startLineNum = 1
+	vp.nextLineNum = 1
+
+	centered := lipgloss.Place(vp.viewport.Width, vp.viewport.Height,
+		lipgloss.Center, lipgloss.Center, block)
+	vp.viewport.SetContent(centered)
 }
 
 // SetTitle sets a custom title.

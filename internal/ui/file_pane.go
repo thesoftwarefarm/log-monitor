@@ -137,6 +137,33 @@ func (fp *FilePaneModel) MoveDown() {
 	}
 }
 
+// PageUp moves cursor up by one page.
+func (fp *FilePaneModel) PageUp() {
+	pageSize := fp.height - 5
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	fp.cursor -= pageSize
+	if fp.cursor < 0 {
+		fp.cursor = 0
+	}
+}
+
+// PageDown moves cursor down by one page.
+func (fp *FilePaneModel) PageDown() {
+	pageSize := fp.height - 5
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	fp.cursor += pageSize
+	if max := fp.totalRows() - 1; fp.cursor > max {
+		fp.cursor = max
+	}
+	if fp.cursor < 0 {
+		fp.cursor = 0
+	}
+}
+
 // SetCursorFromY moves the cursor based on a mouse Y coordinate within the pane.
 // The pane layout is: row 0 = border, row 1 = table header, row 2+ = items.
 func (fp *FilePaneModel) SetCursorFromY(y int) {
