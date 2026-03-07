@@ -15,9 +15,10 @@ type Config struct {
 }
 
 type Defaults struct {
-	SSHKey    string `yaml:"ssh_key"`
-	SSHPort   int    `yaml:"ssh_port"`
-	TailLines int    `yaml:"tail_lines"`
+	SSHKey      string `yaml:"ssh_key"`
+	SSHPort     int    `yaml:"ssh_port"`
+	TailLines   int    `yaml:"tail_lines"`
+	DownloadDir string `yaml:"download_dir"`
 }
 
 type LogFolder struct {
@@ -69,6 +70,7 @@ func applyDefaults(cfg *Config) {
 		d.TailLines = 100
 	}
 	d.SSHKey = expandTilde(d.SSHKey)
+	d.DownloadDir = expandTilde(d.DownloadDir)
 
 	for i := range cfg.Servers {
 		s := &cfg.Servers[i]
