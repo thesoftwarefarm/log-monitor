@@ -203,6 +203,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i, f := range msg.Files {
 				if f.Name == previousFile.Name {
 					m.filePane.MarkSelected(i)
+					// Restore cursor position to the selected file
+					cursorPos := i
+					if msg.ShowUpDir {
+						cursorPos++
+					}
+					m.filePane.cursor = cursorPos
 					break
 				}
 			}
