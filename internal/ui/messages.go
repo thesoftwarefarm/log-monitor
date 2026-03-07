@@ -63,6 +63,12 @@ type TailErrorMsg struct {
 // TailStoppedMsg signals the tail channel was closed.
 type TailStoppedMsg struct{}
 
+// DownloadProgressMsg carries download progress information.
+type DownloadProgressMsg struct {
+	BytesDownloaded int64
+	TotalBytes      int64
+}
+
 // DownloadDoneMsg signals a successful download.
 type DownloadDoneMsg struct {
 	Filename string
@@ -72,7 +78,8 @@ type DownloadDoneMsg struct {
 
 // DownloadErrorMsg signals a download failure.
 type DownloadErrorMsg struct {
-	Err error
+	Err       error
+	Cancelled bool
 }
 
 // StatusMsg is a generic status update for the status bar.

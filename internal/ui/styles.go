@@ -76,6 +76,13 @@ var (
 	modalShadowStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("8"))
 
+	// Progress bar styles
+	progressFilledStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#03AFFF"))
+
+	progressEmptyStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("8"))
+
 	// Status bar key style
 	statusKeyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#03AFFF"))

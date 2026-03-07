@@ -12,11 +12,12 @@ type keyMap struct {
 	Down       key.Binding
 	Home       key.Binding
 	End        key.Binding
-	Download   key.Binding
-	TailFilter key.Binding
-	Refresh    key.Binding
-	GotoTop    key.Binding
-	GotoBottom key.Binding
+	Download    key.Binding
+	TailFilter  key.Binding
+	Refresh     key.Binding
+	ResumeTail  key.Binding
+	GotoTop     key.Binding
+	GotoBottom  key.Binding
 }
 
 var keys = keyMap{
@@ -60,13 +61,17 @@ var keys = keyMap{
 		key.WithKeys("f5"),
 		key.WithHelp("F5", "Download"),
 	),
+	Refresh: key.NewBinding(
+		key.WithKeys("f6"),
+		key.WithHelp("F6", "Refresh"),
+	),
 	TailFilter: key.NewBinding(
 		key.WithKeys("f7"),
 		key.WithHelp("F7", "Tail filter"),
 	),
-	Refresh: key.NewBinding(
-		key.WithKeys("r"),
-		key.WithHelp("r", "Refresh"),
+	ResumeTail: key.NewBinding(
+		key.WithKeys("f8"),
+		key.WithHelp("F8", "Resume tail"),
 	),
 	GotoTop: key.NewBinding(
 		key.WithKeys("g"),
@@ -82,6 +87,6 @@ var keys = keyMap{
 const (
 	shortcutsListPane   = "Type: Filter | Enter: Select | Tab: Switch pane | Esc: Clear filter | Ctrl-C: Exit"
 	shortcutsFolderPane = "Enter: Select folder | Tab: Switch pane | Ctrl-C: Exit"
-	shortcutsFilePane   = "Type: Filter | Enter: Select file | Tab: Switch pane | Esc: Clear filter | Ctrl-C: Exit"
-	shortcutsViewerPane = "F5: Download | F7: Filter | g/G: Top/Bottom | r: Refresh | Shift+Click: Select text | Esc: Stop tail | Ctrl-C: Exit"
+	shortcutsFilePane   = "Type: Filter | Enter: Select file | F5: Download | F6: Refresh | Tab: Switch pane | Esc: Clear filter | Ctrl-C: Exit"
+	shortcutsViewerPane = "F6: Refresh | F7: Filter | g/G: Top/Bottom | Shift+Click: Select text | Esc: Stop tail | Ctrl-C: Exit"
 )

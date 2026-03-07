@@ -128,15 +128,15 @@ func waitForTailData(ch <-chan []byte) tea.Cmd {
 	}
 }
 
-// downloadFileCmd downloads a remote file.
-func downloadFileCmd(pool *ssh.Pool, srv config.ServerConfig, remotePath, localDir, localFilename string) tea.Cmd {
+// downloadFileCmd downloads a remote file with progress reporting and cancellation support.
+func downloadFileCmd(pool *ssh.Pool, srv config.ServerConfig, remotePath, localDir, localFilename string, dlCtx context.Context, progressCh chan<- int64) tea.Cmd {
 	return func() tea.Msg {
 		localPath := filepath.Join(localDir, localFilename)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
+		connCtx, connCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer connCancel()
 
-		client, err := pool.GetClient(ctx, srv)
+		client, err := pool.GetClient(connCtx, srv)
 		if err != nil {
 			return DownloadErrorMsg{Err: fmt.Errorf("download connect: %v", err)}
 		}
@@ -146,7 +146,10 @@ func downloadFileCmd(pool *ssh.Pool, srv config.ServerConfig, remotePath, localD
 			opts.SudoPassword = pool.GetSudoPassword(srv)
 		}
 
-		if err := ssh.DownloadFile(client, remotePath, localPath, opts); err != nil {
+		if err := ssh.DownloadFile(client, remotePath, localPath, opts, dlCtx, progressCh); err != nil {
+			if dlCtx.Err() != nil {
+				return DownloadErrorMsg{Err: fmt.Errorf("download cancelled"), Cancelled: true}
+			}
 			return DownloadErrorMsg{Err: fmt.Errorf("download: %v", err)}
 		}
 
@@ -156,6 +159,17 @@ func downloadFileCmd(pool *ssh.Pool, srv config.ServerConfig, remotePath, localD
 		}
 
 		return DownloadDoneMsg{Filename: localFilename, Path: localPath, Size: size}
+	}
+}
+
+// waitForDownloadProgress reads progress updates from the channel and returns them as messages.
+func waitForDownloadProgress(ch <-chan int64, totalSize int64) tea.Cmd {
+	return func() tea.Msg {
+		bytes, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return DownloadProgressMsg{BytesDownloaded: bytes, TotalBytes: totalSize}
 	}
 }
 

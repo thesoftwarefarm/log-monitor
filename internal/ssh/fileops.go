@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,28 @@ import (
 	"al.essio.dev/pkg/shellescape"
 	gossh "golang.org/x/crypto/ssh"
 )
+
+// progressWriter wraps an io.Writer and reports cumulative bytes written to a channel.
+type progressWriter struct {
+	w       io.Writer
+	ch      chan<- int64
+	ctx     context.Context
+	written int64
+}
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	if err := pw.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := pw.w.Write(p)
+	pw.written += int64(n)
+	// Non-blocking send of cumulative bytes
+	select {
+	case pw.ch <- pw.written:
+	default:
+	}
+	return n, err
+}
 
 // CommandOpts holds optional parameters for remote command execution.
 type CommandOpts struct {
@@ -140,7 +163,16 @@ func StatFile(client *gossh.Client, path string, opts CommandOpts) (*FileInfo, e
 }
 
 // DownloadFile streams a remote file to a local path via cat over SSH.
-func DownloadFile(client *gossh.Client, remotePath, localPath string, opts CommandOpts) error {
+// If ctx is non-nil, the download can be cancelled. If progressCh is non-nil,
+// cumulative bytes written are reported through it and the channel is closed on return.
+func DownloadFile(client *gossh.Client, remotePath, localPath string, opts CommandOpts, ctx context.Context, progressCh chan<- int64) error {
+	if progressCh != nil {
+		defer close(progressCh)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return fmt.Errorf("creating local directory: %w", err)
 	}
@@ -158,6 +190,22 @@ func DownloadFile(client *gossh.Client, remotePath, localPath string, opts Comma
 		return fmt.Errorf("creating local file: %w", err)
 	}
 	defer f.Close()
+
+	// Build the destination writer, optionally wrapping with progress reporting
+	var dst io.Writer = f
+	if progressCh != nil {
+		dst = &progressWriter{w: f, ch: progressCh, ctx: ctx}
+	}
+
+	copyAndCleanup := func(stdout io.Reader) error {
+		if _, err := io.Copy(dst, stdout); err != nil {
+			// On cancel/error, remove partial file
+			f.Close()
+			os.Remove(localPath)
+			return fmt.Errorf("downloading file: %w", err)
+		}
+		return nil
+	}
 
 	if opts.SudoPassword != "" {
 		sudoCmd := fmt.Sprintf("sudo -S %s", cmd)
@@ -185,8 +233,8 @@ func DownloadFile(client *gossh.Client, remotePath, localPath string, opts Comma
 		}
 		stdin.Close()
 
-		if _, err := io.Copy(f, stdout); err != nil {
-			return fmt.Errorf("downloading file: %w", err)
+		if err := copyAndCleanup(stdout); err != nil {
+			return err
 		}
 
 		if err := sess.Wait(); err != nil {
@@ -210,8 +258,8 @@ func DownloadFile(client *gossh.Client, remotePath, localPath string, opts Comma
 		return fmt.Errorf("starting %q: %w", cmd, err)
 	}
 
-	if _, err := io.Copy(f, stdout); err != nil {
-		return fmt.Errorf("downloading file: %w", err)
+	if err := copyAndCleanup(stdout); err != nil {
+		return err
 	}
 
 	if err := sess.Wait(); err != nil {

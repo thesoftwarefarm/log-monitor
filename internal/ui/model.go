@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,15 @@ const (
 	modalSudo
 	modalFilter
 	modalDownload
+)
+
+type downloadPhase int
+
+const (
+	downloadPhaseInput    downloadPhase = iota
+	downloadPhaseProgress
+	downloadPhaseDone
+	downloadPhaseError
 )
 
 // AutoSelect holds CLI flags for automatic selection at startup.
@@ -69,6 +79,16 @@ type Model struct {
 	modalInput2 textinput.Model // second field for download
 	modalFocus  int             // which field focused in multi-field modals
 	sudoServer  *config.ServerConfig // server awaiting sudo password
+
+	// Download progress state
+	downloadPhase           downloadPhase
+	downloadCancel          context.CancelFunc
+	downloadProgressCh      chan int64
+	downloadBytesDownloaded int64
+	downloadTotalBytes      int64
+	downloadLocalPath       string
+	downloadError           string
+	downloadFile            *ssh.FileInfo // file targeted for download
 
 	// Pane widths for mouse hit-testing
 	serverPaneWidth int
@@ -176,9 +196,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case FilesLoadedMsg:
+		// Preserve selected file across refresh
+		previousFile := m.currentFile
 		m.filePane.SetFiles(msg.Dir, msg.Files, msg.ShowUpDir)
+		if previousFile != nil {
+			for i, f := range msg.Files {
+				if f.Name == previousFile.Name {
+					m.filePane.MarkSelected(i)
+					break
+				}
+			}
+		}
 		m.errorMsg = ""
-		m.setContext(fmt.Sprintf("\033[38;2;3;175;255m%s\033[0m — Select a file", m.currentServer.Name))
+		if m.currentFile != nil {
+			fullPath := filepath.Join(m.currentFolder.Path, m.currentFile.Name)
+			m.setContext(fmt.Sprintf("\033[38;2;3;175;255m%s\033[0m %s", m.currentServer.Name, fullPath))
+		} else {
+			m.setContext(fmt.Sprintf("\033[38;2;3;175;255m%s\033[0m — Select a file", m.currentServer.Name))
+		}
 		// Fire auto-select callback if set
 		if m.onFilesLoaded != nil {
 			cb := m.onFilesLoaded
@@ -241,7 +276,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case DownloadProgressMsg:
+		if m.modal == modalDownload && m.downloadPhase == downloadPhaseProgress {
+			m.downloadBytesDownloaded = msg.BytesDownloaded
+			m.downloadTotalBytes = msg.TotalBytes
+			return m, waitForDownloadProgress(m.downloadProgressCh, m.downloadTotalBytes)
+		}
+		return m, nil
+
 	case DownloadDoneMsg:
+		if m.modal == modalDownload && m.downloadPhase == downloadPhaseProgress {
+			m.downloadPhase = downloadPhaseDone
+			m.downloadLocalPath = msg.Path
+			m.downloadBytesDownloaded = msg.Size
+			m.downloadTotalBytes = msg.Size
+			return m, nil
+		}
+		// Fallback for non-modal downloads
 		sizeStr := ""
 		if msg.Size > 0 {
 			sizeStr = fmt.Sprintf(" (%s)", ssh.FormatSize(msg.Size))
@@ -250,6 +301,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case DownloadErrorMsg:
+		if m.modal == modalDownload && m.downloadPhase == downloadPhaseProgress {
+			m.downloadPhase = downloadPhaseError
+			if msg.Cancelled {
+				m.downloadError = "Download cancelled"
+			} else {
+				m.downloadError = msg.Err.Error()
+			}
+			return m, nil
+		}
 		m.errorMsg = msg.Err.Error()
 		return m, nil
 
@@ -385,10 +445,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.stopTail(), nil
 
 	case "f5":
-		return m.showDownloadDialog()
+		if m.focused == paneFile {
+			return m.showDownloadDialog()
+		}
+		return m, nil
+
+	case "f6":
+		return m.refreshFiles()
 
 	case "f7":
 		return m.showFilterPrompt(), nil
+
+	case "f8":
+		return m.resumeTail()
 
 	case "enter":
 		return m.handleEnter()
@@ -539,8 +608,6 @@ func (m Model) handleRune(r rune) (tea.Model, tea.Cmd) {
 			m.viewerPane.GotoTop()
 		case 'G':
 			m.viewerPane.GotoBottom()
-		case 'r':
-			return m.refreshFiles()
 		}
 	}
 	return m, nil
@@ -753,9 +820,12 @@ func (m *Model) startConnection(srv config.ServerConfig) tea.Cmd {
 func (m Model) stopTail() Model {
 	m.stopTailInPlace()
 	m.viewerPane.StopSpinner()
-	m.viewerPane.ResetTitle()
-	if m.currentServer != nil {
-		m.setContext(fmt.Sprintf("\033[33mTail stopped\033[0m — %s", m.currentServer.Name))
+	if m.currentServer != nil && m.currentFile != nil && m.currentFolder != nil {
+		fullPath := filepath.Join(m.currentFolder.Path, m.currentFile.Name)
+		m.viewerPane.SetTitle(fmt.Sprintf(" Stopped: %s ", m.currentFile.Name))
+		m.setContext(fmt.Sprintf("\033[33mTail stopped\033[0m %s:%s — \033[90mF8 to resume\033[0m", m.currentServer.Name, fullPath))
+	} else {
+		m.viewerPane.ResetTitle()
 	}
 	return m
 }
@@ -774,7 +844,22 @@ func (m Model) refreshFiles() (tea.Model, tea.Cmd) {
 	if m.currentServer == nil || m.currentFolder == nil {
 		return m, nil
 	}
+	m.setContext(fmt.Sprintf("\033[33mRefreshing\033[0m %s...", m.currentServer.Name))
 	return m, connectAndListCmd(m.pool, *m.currentServer, *m.currentFolder)
+}
+
+func (m Model) resumeTail() (tea.Model, tea.Cmd) {
+	if m.tailing || m.currentServer == nil || m.currentFolder == nil || m.currentFile == nil {
+		return m, nil
+	}
+	if isBinaryExtension(m.currentFile.Name) {
+		return m, nil
+	}
+	fullPath := filepath.Join(m.currentFolder.Path, m.currentFile.Name)
+	ch := make(chan []byte, 64)
+	m.tailChan = ch
+	m.setContext(fmt.Sprintf("\033[32mResuming tail\033[0m %s:%s", m.currentServer.Name, fullPath))
+	return m, startTailCmd(m.pool, *m.currentServer, fullPath, ch)
 }
 
 func (m Model) autoStart() (tea.Model, tea.Cmd) {
@@ -842,18 +927,40 @@ type autoFileSelectMsg struct {
 func (m Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
+		m.dismissDownload()
 		return m, tea.Quit
 
 	case "esc":
+		// Download modal: phase-aware handling
+		if m.modal == modalDownload {
+			switch m.downloadPhase {
+			case downloadPhaseProgress:
+				// Cancel the download
+				if m.downloadCancel != nil {
+					m.downloadCancel()
+				}
+				return m, nil
+			case downloadPhaseDone, downloadPhaseError:
+				m.dismissDownload()
+				m.modal = modalNone
+				return m, nil
+			}
+		}
 		m.modal = modalNone
 		m.sudoServer = nil
 		return m, nil
 
 	case "enter":
+		// Download modal: done/error phases dismiss on Enter
+		if m.modal == modalDownload && (m.downloadPhase == downloadPhaseDone || m.downloadPhase == downloadPhaseError) {
+			m.dismissDownload()
+			m.modal = modalNone
+			return m, nil
+		}
 		return m.submitModal()
 
 	case "tab":
-		if m.modal == modalDownload {
+		if m.modal == modalDownload && m.downloadPhase == downloadPhaseInput {
 			m.modalFocus = (m.modalFocus + 1) % 2
 			if m.modalFocus == 0 {
 				m.modalInput.Focus()
@@ -866,6 +973,11 @@ func (m Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// During progress/done/error phases, ignore other keys
+	if m.modal == modalDownload && m.downloadPhase != downloadPhaseInput {
+		return m, nil
+	}
+
 	// Forward to the focused text input
 	var cmd tea.Cmd
 	if m.modal == modalDownload && m.modalFocus == 1 {
@@ -874,6 +986,21 @@ func (m Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.modalInput, cmd = m.modalInput.Update(msg)
 	}
 	return m, cmd
+}
+
+// dismissDownload resets all download-related state.
+func (m *Model) dismissDownload() {
+	if m.downloadCancel != nil {
+		m.downloadCancel()
+		m.downloadCancel = nil
+	}
+	m.downloadProgressCh = nil
+	m.downloadPhase = downloadPhaseInput
+	m.downloadBytesDownloaded = 0
+	m.downloadTotalBytes = 0
+	m.downloadLocalPath = ""
+	m.downloadError = ""
+	m.downloadFile = nil
 }
 
 func (m Model) submitModal() (tea.Model, tea.Cmd) {
@@ -903,23 +1030,46 @@ func (m Model) submitModal() (tea.Model, tea.Cmd) {
 		m.modal = modalNone
 		// Re-load with filter
 		if m.currentServer != nil && m.currentFolder != nil && m.currentFile != nil {
+			wasTailing := m.tailing
 			m.stopTailInPlace()
 			m.viewerPane.SetTailFilter(newFilter)
 			m.viewerPane.Clear()
 			m.viewerPane.SetTailFilter(newFilter) // Clear resets it, set again
 			fullPath := filepath.Join(m.currentFolder.Path, m.currentFile.Name)
-			m.setContext(fmt.Sprintf("\033[32m%s\033[0m %s", m.currentServer.Name, fullPath))
-			return m, countAndReadFileCmd(m.pool, *m.currentServer, fullPath, m.cfg.Defaults.TailLines)
+			if newFilter != "" {
+				m.setContext(fmt.Sprintf("\033[32m%s\033[0m %s \033[33m[filter: %s]\033[0m", m.currentServer.Name, fullPath, newFilter))
+			} else {
+				m.setContext(fmt.Sprintf("\033[32m%s\033[0m %s", m.currentServer.Name, fullPath))
+			}
+			cmds := []tea.Cmd{countAndReadFileCmd(m.pool, *m.currentServer, fullPath, m.cfg.Defaults.TailLines)}
+			if wasTailing {
+				ch := make(chan []byte, 64)
+				m.tailChan = ch
+				cmds = append(cmds, startTailCmd(m.pool, *m.currentServer, fullPath, ch))
+			}
+			return m, tea.Batch(cmds...)
 		}
 
 	case modalDownload:
 		dir := m.modalInput.Value()
 		name := m.modalInput2.Value()
-		m.modal = modalNone
-		if m.currentServer != nil && m.currentFolder != nil && m.currentFile != nil {
-			remotePath := filepath.Join(m.currentFolder.Path, m.currentFile.Name)
-			m.setContext(fmt.Sprintf("\033[33mDownloading\033[0m %s...", name))
-			return m, downloadFileCmd(m.pool, *m.currentServer, remotePath, dir, name)
+		if m.currentServer != nil && m.currentFolder != nil && m.downloadFile != nil {
+			remotePath := filepath.Join(m.currentFolder.Path, m.downloadFile.Name)
+
+			// Transition to progress phase
+			m.downloadPhase = downloadPhaseProgress
+			dlCtx, dlCancel := context.WithCancel(context.Background())
+			progressCh := make(chan int64, 1)
+			m.downloadCancel = dlCancel
+			m.downloadProgressCh = progressCh
+			m.downloadTotalBytes = m.downloadFile.Size
+			m.downloadBytesDownloaded = 0
+			m.downloadLocalPath = filepath.Join(dir, name)
+
+			return m, tea.Batch(
+				downloadFileCmd(m.pool, *m.currentServer, remotePath, dir, name, dlCtx, progressCh),
+				waitForDownloadProgress(progressCh, m.downloadFile.Size),
+			)
 		}
 	}
 
@@ -965,13 +1115,25 @@ func (m Model) showFilterPrompt() Model {
 }
 
 func (m Model) showDownloadDialog() (tea.Model, tea.Cmd) {
-	if m.currentServer == nil || m.currentFolder == nil || m.currentFile == nil {
+	if m.currentServer == nil || m.currentFolder == nil {
 		return m, nil
 	}
 
-	defaultDir := "."
-	if exe, err := os.Executable(); err == nil {
-		defaultDir = filepath.Join(filepath.Dir(exe), "logs")
+	// Use the file at the cursor (blue highlight)
+	_, _, _, _, file := m.filePane.SelectedItem()
+	if file == nil {
+		return m, nil
+	}
+	m.downloadFile = file
+
+	defaultDir := m.cfg.Defaults.DownloadDir
+	if defaultDir == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			defaultDir = filepath.Join(home, "Downloads")
+		} else {
+			defaultDir = "."
+		}
 	}
 
 	ti1 := styledInput()
@@ -981,37 +1143,83 @@ func (m Model) showDownloadDialog() (tea.Model, tea.Cmd) {
 
 	ti2 := styledInput()
 	ti2.Placeholder = "Filename"
-	ti2.SetValue(m.currentFile.Name)
+	ti2.SetValue(file.Name)
 
 	m.modal = modalDownload
 	m.modalInput = ti1
 	m.modalInput2 = ti2
 	m.modalFocus = 0
+	m.downloadPhase = downloadPhaseInput
 	return m, nil
 }
 
 func (m Model) renderModal(background string) string {
 	var title, content string
 
-	buttonOK := modalButtonStyle.Render("Enter OK")
-	buttonCancel := modalButtonStyle.Render("Esc Cancel")
-	buttonTab := modalButtonStyle.Render("Tab Next")
+	buttonOK := modalButtonStyle.Render("[Enter] OK")
+	buttonCancel := modalButtonStyle.Render("[Esc] Cancel")
+	buttonTab := modalButtonStyle.Render("[Tab] Next")
 
 	switch m.modal {
 	case modalSudo:
-		title = fmt.Sprintf(" Sudo password for %s ", m.currentServer.Name)
+		title = fmt.Sprintf("Sudo password for %s", m.currentServer.Name)
 		content = m.modalInput.View() + "\n\n" + buttonOK + "  " + buttonCancel
 
 	case modalFilter:
-		title = " Tail Filter "
+		title = "Tail Filter"
 		content = m.modalInput.View() + "\n\n" + buttonOK + "  " + buttonCancel
 
 	case modalDownload:
-		title = " Download File "
-		content = modalHintStyle.Render("Download remote file to local machine") +
-			"\n\n" + modalHintStyle.Render("Local path:") + "\n" + m.modalInput.View() +
-			"\n\n" + modalHintStyle.Render("Filename:") + "\n" + m.modalInput2.View() +
-			"\n\n" + buttonOK + "  " + buttonTab + "  " + buttonCancel
+		switch m.downloadPhase {
+		case downloadPhaseInput:
+			title = "Download File"
+			content = modalHintStyle.Render("Download remote file to local machine") +
+				"\n\n" + modalHintStyle.Render("Local path:") + "\n" + m.modalInput.View() +
+				"\n\n" + modalHintStyle.Render("Filename:") + "\n" + m.modalInput2.View() +
+				"\n\n" + buttonOK + "  " + buttonTab + "  " + buttonCancel
+
+		case downloadPhaseProgress:
+			title = "Downloading..."
+			fileName := filepath.Base(m.downloadLocalPath)
+			fileHint := modalHintStyle.Render(fileName)
+
+			var bar, counter string
+			barWidth := modalInnerWidth - 8 // leave room for percentage
+			if m.downloadTotalBytes > 0 {
+				percent := float64(m.downloadBytesDownloaded) / float64(m.downloadTotalBytes)
+				if percent > 1.0 {
+					percent = 1.0
+				}
+				bar = renderProgressBar(barWidth, percent)
+				counter = fmt.Sprintf("%s / %s",
+					ssh.FormatSize(m.downloadBytesDownloaded),
+					ssh.FormatSize(m.downloadTotalBytes))
+			} else {
+				bar = renderProgressBar(barWidth, 0)
+				counter = ssh.FormatSize(m.downloadBytesDownloaded)
+			}
+
+			content = fileHint + "\n\n" + bar + "\n" +
+				modalHintStyle.Render(counter) + "\n\n" + buttonCancel
+
+		case downloadPhaseDone:
+			title = "Download Complete"
+			successStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+			content = successStyle.Render("✓ Download complete") +
+				"\n\n" + modalHintStyle.Render("Saved to:") + "\n" +
+				lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Render(m.downloadLocalPath) +
+				"\n\n" + modalHintStyle.Render("Size: "+ssh.FormatSize(m.downloadBytesDownloaded)) +
+				"\n\n" + buttonOK
+
+		case downloadPhaseError:
+			if strings.Contains(m.downloadError, "cancelled") {
+				title = "Download Cancelled"
+			} else {
+				title = "Download Failed"
+			}
+			errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+			content = errStyle.Render(m.downloadError) + "\n\n" + buttonOK
+		}
 	}
 
 	modalBox := modalStyle.Width(70).Render(
@@ -1079,6 +1287,29 @@ func (m Model) renderModal(background string) string {
 	return strings.Join(bgLines, "\n")
 }
 
+// renderProgressBar renders an ASCII progress bar with filled/empty segments and percentage.
+func renderProgressBar(width int, percent float64) string {
+	if width < 10 {
+		width = 10
+	}
+	// Reserve 5 chars for " 100%"
+	barWidth := width - 5
+	if barWidth < 1 {
+		barWidth = 1
+	}
+	filled := int(float64(barWidth) * percent)
+	if filled > barWidth {
+		filled = barWidth
+	}
+	empty := barWidth - filled
+
+	bar := progressFilledStyle.Render(strings.Repeat("█", filled)) +
+		progressEmptyStyle.Render(strings.Repeat("░", empty))
+
+	pctStr := fmt.Sprintf(" %3.0f%%", percent*100)
+	return bar + lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Render(pctStr)
+}
+
 // setTerminalTitle sets the terminal window/tab title via OSC escape.
 func setTerminalTitle(title string) {
 	fmt.Fprintf(os.Stdout, "\033]0;%s\007", title)
@@ -1088,6 +1319,9 @@ func setTerminalTitle(title string) {
 func (m *Model) Shutdown() {
 	logger.Log("app", "shutdown: start")
 	m.stopTailInPlace()
+	if m.downloadCancel != nil {
+		m.downloadCancel()
+	}
 	m.pool.CloseAll()
 	setTerminalTitle("")
 	logger.Log("app", "shutdown: done")
