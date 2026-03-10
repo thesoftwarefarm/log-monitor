@@ -11,7 +11,11 @@
       "Bash(go mod:*)",
       "Bash(go vet:*)",
       "WebFetch(domain:www.xfree86.org)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Read(//Users/dragosperca/go/pkg/mod/github.com/charmbracelet/bubbles@v1.0.0/viewport/**)",
+      "Read(//Users/dragosperca/go/pkg/mod/github.com/charmbracelet/**)",
+      "Bash(ls ~/go/pkg/mod/github.com/charmbracelet/x/ansi@v0.11.6/*.go 2>/dev/null | head -30)",
+      "Bash(ls /Users/dragosperca/projects/log-monitor/internal/ui/*.go)"
     ]
   }
 }

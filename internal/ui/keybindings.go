@@ -18,6 +18,7 @@ type keyMap struct {
 	ResumeTail  key.Binding
 	GotoTop     key.Binding
 	GotoBottom  key.Binding
+	Wrap        key.Binding
 }
 
 var keys = keyMap{
@@ -81,6 +82,10 @@ var keys = keyMap{
 		key.WithKeys("G"),
 		key.WithHelp("G", "Bottom"),
 	),
+	Wrap: key.NewBinding(
+		key.WithKeys("w"),
+		key.WithHelp("w", "Toggle wrap"),
+	),
 }
 
 // Pane-specific shortcut hint strings.
@@ -88,5 +93,5 @@ const (
 	shortcutsListPane   = "Type: Filter | Enter: Select | Tab: Switch pane | Esc: Clear filter | Ctrl-C: Exit"
 	shortcutsFolderPane = "Enter: Select folder | Tab: Switch pane | Ctrl-C: Exit"
 	shortcutsFilePane   = "Type: Filter | Enter: Select file | F5: Download | F6: Refresh | Tab: Switch pane | Esc: Clear filter | Ctrl-C: Exit"
-	shortcutsViewerPane = "F6: Refresh | F7: Filter | g/G: Top/Bottom | Shift+Click: Select text | Esc: Stop tail | Ctrl-C: Exit"
+	shortcutsViewerPane = "F6: Refresh | F7: Filter | g/G: Top/Bottom | w: Wrap | Shift+Click: Select text | Esc: Stop tail | Ctrl-C: Exit"
 )

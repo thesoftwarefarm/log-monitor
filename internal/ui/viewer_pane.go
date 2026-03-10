@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const defaultViewerTitle = " Log Viewer "
@@ -35,6 +36,9 @@ type ViewerPaneModel struct {
 
 	// Line count
 	lineCount int
+
+	// Word wrap
+	wrapEnabled bool
 }
 
 // NewViewerPaneModel creates a new viewer pane model.
@@ -258,8 +262,36 @@ func (vp *ViewerPaneModel) ScrollDown(n int) {
 	vp.viewport.LineDown(n)
 }
 
+// ToggleWrap toggles line wrapping and rebuilds content.
+func (vp *ViewerPaneModel) ToggleWrap() {
+	vp.wrapEnabled = !vp.wrapEnabled
+	vp.rebuildContent()
+}
+
+// IsWrapEnabled returns whether line wrapping is active.
+func (vp *ViewerPaneModel) IsWrapEnabled() bool {
+	return vp.wrapEnabled
+}
+
 func (vp *ViewerPaneModel) rebuildContent() {
-	content := strings.Join(vp.lines, "\n")
+	if !vp.wrapEnabled {
+		content := strings.Join(vp.lines, "\n")
+		vp.viewport.SetContent(content)
+		return
+	}
+	width := vp.viewport.Width
+	if width < 1 {
+		content := strings.Join(vp.lines, "\n")
+		vp.viewport.SetContent(content)
+		return
+	}
+	var displayLines []string
+	for _, line := range vp.lines {
+		wrapped := ansi.Hardwrap(line, width, true)
+		parts := strings.Split(wrapped, "\n")
+		displayLines = append(displayLines, parts...)
+	}
+	content := strings.Join(displayLines, "\n")
 	vp.viewport.SetContent(content)
 }
 

@@ -614,6 +614,8 @@ func (m Model) handleRune(r rune) (tea.Model, tea.Cmd) {
 			m.viewerPane.GotoTop()
 		case 'G':
 			m.viewerPane.GotoBottom()
+		case 'w':
+			m.viewerPane.ToggleWrap()
 		}
 	}
 	return m, nil
