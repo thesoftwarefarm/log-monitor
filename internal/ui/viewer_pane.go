@@ -11,13 +11,22 @@ import (
 
 const defaultViewerTitle = " Log Viewer "
 const maxViewerLines = 10000
+const gutterWidth = 8 // "NNNNN | " = 5 digits + space + pipe + space
+const gutterFmt = "\033[90m%5d |\033[0m "
 
+var blankGutter = strings.Repeat(" ", gutterWidth)
 var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+
+// viewerLine stores a line's number separately from its colorized content.
+type viewerLine struct {
+	num     int    // original file line number
+	content string // colorized content (without line number prefix)
+}
 
 // ViewerPaneModel holds the state for the log viewer pane.
 type ViewerPaneModel struct {
 	viewport viewport.Model
-	lines    []string // raw colorized lines
+	lines    []viewerLine // colorized lines with line numbers
 	width    int
 	height   int
 	title    string
@@ -98,8 +107,7 @@ func (vp *ViewerPaneModel) SetText(text string, startLine int) {
 		if vp.tailFilter != "" {
 			colorized = highlightFilterANSI(colorized, vp.tailFilter)
 		}
-		numbered := fmt.Sprintf("\033[90m%5d |\033[0m %s", origNum, colorized)
-		vp.lines = append(vp.lines, numbered)
+		vp.lines = append(vp.lines, viewerLine{num: origNum, content: colorized})
 		vp.lineCount++
 	}
 
@@ -131,8 +139,7 @@ func (vp *ViewerPaneModel) AppendTailData(data []byte) {
 		if vp.tailFilter != "" {
 			colorized = highlightFilterANSI(colorized, vp.tailFilter)
 		}
-		numbered := fmt.Sprintf("\033[90m%5d |\033[0m %s", origNum, colorized)
-		vp.lines = append(vp.lines, numbered)
+		vp.lines = append(vp.lines, viewerLine{num: origNum, content: colorized})
 		vp.lineCount++
 	}
 
@@ -274,25 +281,51 @@ func (vp *ViewerPaneModel) IsWrapEnabled() bool {
 }
 
 func (vp *ViewerPaneModel) rebuildContent() {
+	if len(vp.lines) == 0 {
+		vp.viewport.SetContent("")
+		return
+	}
+
+	var b strings.Builder
+
 	if !vp.wrapEnabled {
-		content := strings.Join(vp.lines, "\n")
-		vp.viewport.SetContent(content)
+		for i, line := range vp.lines {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			fmt.Fprintf(&b, gutterFmt, line.num)
+			b.WriteString(line.content)
+		}
+		vp.viewport.SetContent(b.String())
 		return
 	}
-	width := vp.viewport.Width
-	if width < 1 {
-		content := strings.Join(vp.lines, "\n")
-		vp.viewport.SetContent(content)
-		return
+
+	// Wrapping enabled: wrap content at (viewportWidth - gutterWidth)
+	contentWidth := vp.viewport.Width - gutterWidth
+	if contentWidth < 1 {
+		contentWidth = 1
 	}
-	var displayLines []string
-	for _, line := range vp.lines {
-		wrapped := ansi.Hardwrap(line, width, true)
+
+	for i, line := range vp.lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		wrapped := ansi.Hardwrap(line.content, contentWidth, true)
 		parts := strings.Split(wrapped, "\n")
-		displayLines = append(displayLines, parts...)
+		for j, part := range parts {
+			if j > 0 {
+				b.WriteByte('\n')
+			}
+			if j == 0 {
+				fmt.Fprintf(&b, gutterFmt, line.num)
+			} else {
+				b.WriteString(blankGutter)
+			}
+			b.WriteString(part)
+		}
 	}
-	content := strings.Join(displayLines, "\n")
-	vp.viewport.SetContent(content)
+
+	vp.viewport.SetContent(b.String())
 }
 
 // View renders the viewer pane.
